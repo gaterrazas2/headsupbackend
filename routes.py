@@ -20,7 +20,7 @@ def print_request():
 @app.route("/getEmailCount")
 async def get_email_count():
     result = await backend.getEmailCount()
-    return result
+    return str(result)
 
 # Get from DB
 @app.route("/getComics")

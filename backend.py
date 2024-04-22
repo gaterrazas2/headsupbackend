@@ -28,12 +28,13 @@ class Backend:
             return serialized_documents
         else:
             return []
-        
+    
+    # convert to set to remove duplicates
     async def getEmailCount(self):
-        documents = list(self.collection.find('email'))
-        documents = set(documents)
-        for document in documents:
-            count += 1
+        documents = list(self.collection.find({'email': {'$exists': True}}))
+        unique_documents = set(tuple(doc.items()) for doc in documents)
+        count = len(unique_documents)
         return count
+
 
 
