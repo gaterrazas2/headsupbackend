@@ -18,6 +18,7 @@ class Backend:
         print("Hey I posted your data fam")
         return  
 
+
     async def getFromDB(self, category):
         if category in {'comics', 'music', 'games', 'sports', 'events'}:
             query = {'category': category}
@@ -27,6 +28,12 @@ class Backend:
             return serialized_documents
         else:
             return []
-
+        
+    async def getEmailCount(self):
+        documents = list(self.collection.find('email'))
+        documents = set(documents)
+        for document in documents:
+            count += 1
+        return count
 
 

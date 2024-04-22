@@ -16,6 +16,12 @@ def print_request():
         backend.sendToDB(data_dict)
     return "got it!" , 200 
 
+# Get number of emails added
+@app.route("/getEmailCount")
+async def get_email_count():
+    result = await backend.getEmailCount()
+    return result
+
 # Get from DB
 @app.route("/getComics")
 async def get_comics():
