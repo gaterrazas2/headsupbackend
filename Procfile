@@ -1,2 +1,2 @@
-web: flask run --port=$PORT
+web: gunicorn routes:app
 
