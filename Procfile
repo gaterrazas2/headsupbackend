@@ -1,1 +1,2 @@
-web: flask --app routes.py run
+web: flask run --port=$PORT
+
