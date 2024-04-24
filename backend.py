@@ -37,6 +37,15 @@ class Backend:
             unique_emails.add(doc['email'])
         count = len(unique_emails)
         return count
+    
+    # convert to set to remove duplicates
+    async def getEmailList(self):
+        documents = list(self.collection.find({'email': {'$exists': True}}))
+        unique_emails = set()
+        for doc in documents:
+            unique_emails.add(doc['email'])
+        unique_emails = list(unique_emails)
+        return unique_emails
 
 
 

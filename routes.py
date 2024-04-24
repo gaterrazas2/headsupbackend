@@ -22,6 +22,11 @@ async def get_email_count():
     result = await backend.getEmailCount()
     return str(result)
 
+@app.route("/getEmailList")
+async def get_email_list():
+    result = await backend.getEmailList()
+    return jsonify(result)
+
 # Get from DB
 @app.route("/getComics")
 async def get_comics():
