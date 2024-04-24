@@ -17,6 +17,12 @@ def print_request():
     return "got it!" , 200 
 
 # Get number of emails added
+@app.route("/signin")
+async def get_credentials():
+    result = await backend.getCredentials()
+    return jsonify(result)
+
+# Get number of emails added
 @app.route("/getEmailCount")
 async def get_email_count():
     result = await backend.getEmailCount()

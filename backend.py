@@ -12,7 +12,6 @@ class Backend:
         self.collection = self.db['Posts']
 
     def sendToDB(self, formData):
-
         # inserting form data in db 
         self.collection.insert_one(formData)
         print("Hey I posted your data fam")
@@ -46,6 +45,12 @@ class Backend:
             unique_emails.add(doc['email'])
         unique_emails = list(unique_emails)
         return unique_emails
+    
+    # convert to set to remove duplicates
+    async def getCredentials(self):
+        document = list(self.collection.find({'username': {'$exists': True}}))
+        serialized_document = [json_util.dumps(document)]
+        return serialized_document
 
 
 
