@@ -58,3 +58,8 @@ async def get_events():
 async def get_games():
     result = await backend.getFromDB('games')
     return jsonify(result)
+
+@app.route("/getShop")
+async def get_shop():
+    result = await backend.getShop()
+    return jsonify(result)

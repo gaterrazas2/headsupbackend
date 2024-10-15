@@ -15,8 +15,14 @@ class Backend:
         # inserting form data in db 
         self.collection.insert_one(formData)
         print("Hey I posted your data fam")
-        return  
+        return 
 
+    async def getShop(self):
+        query = {'category' : 'shop'}
+        documents = list(self.collection.find(query))
+        # Convert ObjectId to string for serialization
+        serialized_documents = [json_util.dumps(doc) for doc in documents]
+        return serialized_documents
 
     async def getFromDB(self, category):
         if category in {'comics', 'music', 'games', 'sports', 'events'}:
