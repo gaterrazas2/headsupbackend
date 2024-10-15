@@ -4,7 +4,12 @@ from flask_cors import CORS
 from backend import Backend
 
 app = Flask(__name__)
-CORS(app) 
+
+# Enable CORS for your frontend origin
+CORS(app, resources={r"/*": {"origins": "https://lilbroblog.com"}}, 
+     methods=['GET', 'POST', 'PUT', 'DELETE'], 
+     supports_credentials=True)
+
 backend = Backend()
 
 # Send to DB
