@@ -17,13 +17,6 @@ class Backend:
         print("Hey I posted your data fam")
         return 
 
-    async def getShop(self):
-        query = {'category' : 'shop'}
-        documents = list(self.collection.find(query))
-        # Convert ObjectId to string for serialization
-        serialized_documents = [json_util.dumps(doc) for doc in documents]
-        return serialized_documents
-
     async def getFromDB(self, category):
         if category in {'comics', 'music', 'games', 'sports', 'events'}:
             query = {'category': category}
@@ -33,6 +26,13 @@ class Backend:
             return serialized_documents
         else:
             return []
+        
+    async def getShop(self):
+        query = {'category' : 'shop'}
+        documents = list(self.collection.find(query))
+        # Convert ObjectId to string for serialization
+        serialized_documents = [json_util.dumps(doc) for doc in documents]
+        return serialized_documents
     
     # convert to set to remove duplicates
     async def getEmailCount(self):

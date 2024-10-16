@@ -13,13 +13,21 @@ CORS(app, resources={r"/*": {"origins": "https://lilbroblog.com"}},
 backend = Backend()
 
 # Send to DB
-@app.route("/post", methods=['POST'])
+@app.route("/postitem", methods=['POST'])
 def print_request():
     if request.method == 'POST':
         data = request.get_data()
         data_dict = json.loads(data)
         backend.sendToDB(data_dict)
     return "got it!" , 200 
+
+@app.route("/post", methods=['POST'])
+def print_request():
+    if request.method == 'POST':
+        data = request.get_data()
+        data_dict = json.loads(data)
+        backend.sendToDB(data_dict)
+    return "got it!" , 200
 
 # Get number of emails added
 @app.route("/signin")
