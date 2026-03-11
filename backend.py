@@ -1,10 +1,11 @@
-import pymongo
+
 from pymongo.mongo_client import MongoClient
 from pymongo.server_api import ServerApi
 from bson import json_util
 from pypdf import PdfReader
 from openai import OpenAI
 from dotenv import load_dotenv
+import os
 
 class Backend:
     def __init__(self) -> None:
@@ -64,15 +65,20 @@ class Backend:
         document = list(self.collection.find({'username': {'$exists': True}}))
         serialized_document = [json_util.dumps(document)]
         return serialized_document
-    
+
     def load_context(self):
         context = {'summary':'','linkedin':''}
-        summary = ""
-        with open("aboutme/summary.txt", "r", encoding="utf-8") as f:
-            summary = f.read()
 
+        # Build path relative to backend.py
+        base_path = os.path.dirname(__file__)
+        summary_path = os.path.join(base_path, "aboutme", "aboutme.txt")
+
+        with open(summary_path, "r", encoding="utf-8") as f:
+            summary = f.read()
         context['summary'] = summary
-        reader = PdfReader("aboutme/linkedin.pdf")
+
+        linkedin_path = os.path.join(base_path, "aboutme", "Profile.pdf")
+        reader = PdfReader(linkedin_path)
         linkedin = ""
         for page in reader.pages:
             text = page.extract_text()
@@ -95,9 +101,9 @@ class Backend:
 
         response = self.openai.chat.completions.create(
             model="gpt-4.1-mini",
-            messages = [[
+            messages = [
                 {"role": "system", "content": system_prompt}] + [{"role": "user", "content": question}
-            ]]
+            ]
         )
 
         return response.choices[0].message.content
