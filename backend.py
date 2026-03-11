@@ -103,7 +103,8 @@ class Backend:
             model="gpt-4.1-mini",
             messages = [
                 {"role": "system", "content": system_prompt}] + [{"role": "user", "content": question}
-            ]
+            ],
+            max_tokens=150
         )
 
         return response.choices[0].message.content
