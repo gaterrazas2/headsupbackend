@@ -19,10 +19,11 @@ def print_request():
 
 # Ask Agent a question about me
 @app.route("/askquestion", methods=['POST'])
-async def ask_question():
+def ask_question():
+    import asyncio
     data = request.json
-    question= data.get('message')
-    result = await backend.askQuestion(question)
+    question = data.get('message')
+    result = asyncio.run(backend.askQuestion(question))
     return jsonify(result)
 
 # Get number of emails added
