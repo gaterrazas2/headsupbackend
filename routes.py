@@ -4,8 +4,9 @@ from flask_cors import CORS
 from backend import Backend
 import asyncio
 
+
 app = Flask(__name__)
-CORS(app) 
+CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
 backend = Backend()
 
 # Send to DB
