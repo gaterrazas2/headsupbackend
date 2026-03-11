@@ -2,6 +2,7 @@ import json
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 from backend import Backend
+import asyncio
 
 app = Flask(__name__)
 CORS(app) 
@@ -16,14 +17,17 @@ def print_request():
         backend.sendToDB(data_dict)
     return "got it!" , 200
 
-# Ask Agent a question about me
+# Ask agent question about me
 @app.route("/askquestion", methods=['POST'])
 def ask_question():
-    import asyncio
     data = request.json
     question = data.get('message')
+    
     result = asyncio.run(backend.askQuestion(question))
-    return jsonify(result)
+    # Extract just the content text from OpenAI-style response
+    bot_text = result.get('choices', [])[0].get('message', {}).get('content', 'Sorry, went wrong.')
+    
+    return jsonify({"response": bot_text})
 
 # Get number of emails added
 @app.route("/signin")
