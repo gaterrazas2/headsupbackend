@@ -2,14 +2,21 @@ import pymongo
 from pymongo.mongo_client import MongoClient
 from pymongo.server_api import ServerApi
 from bson import json_util
+from pypdf import PdfReader
+from openai import OpenAI
+from dotenv import load_dotenv
 
 class Backend:
     def __init__(self) -> None:
+        load_dotenv(override=True)
         # database setup
         self.uri = "mongodb+srv://gterra06:Gt391299%21%21@cluster0.o458oeb.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
         self.client = MongoClient(self.uri, server_api=ServerApi('1'))
         self.db = self.client['LittleBrotherBlog']
         self.collection = self.db['Posts']
+        self.context = self.load_context()
+        self.name = "Gabriel Terrazas"
+        self.openai = OpenAI()
 
     def sendToDB(self, formData):
         # inserting form data in db 
@@ -57,6 +64,44 @@ class Backend:
         document = list(self.collection.find({'username': {'$exists': True}}))
         serialized_document = [json_util.dumps(document)]
         return serialized_document
+    
+    def load_context(self):
+        context = {'summary':'','linkedin':''}
+        summary = ""
+        with open("aboutme/summary.txt", "r", encoding="utf-8") as f:
+            summary = f.read()
+
+        context['summary'] = summary
+        reader = PdfReader("aboutme/linkedin.pdf")
+        linkedin = ""
+        for page in reader.pages:
+            text = page.extract_text()
+            if text:
+                linkedin += text
+
+        context['linkedin'] = linkedin
+        return context
+    
+    async def askQuestion(self, question):
+        system_prompt = f"You are acting as {self.name}. You are answering questions on {self.name}'s website, \
+        particularly questions related to {self.name}'s career, background, skills, experience, and interests relating to the website. \
+        Your responsibility is to represent {self.name} for interactions on the website as faithfully as possible. \
+        You are given a summary of {self.name}'s background and LinkedIn profile which you can use to answer questions. \
+        Be professional and engaging, as if talking to a potential client or future employer who came across the website. \
+        If you don't know the answer, say so. Do not share {self.name}'s phone number under any circumstances"
+
+        system_prompt += f"\n\n## Summary:\n{self.context['summary']}\n\n## LinkedIn Profile:\n{self.context['linkedin']}\n\n"
+        system_prompt += f"With this context, please chat with the user, always staying in character as {self.name}."
+
+        response = self.openai.chat.completions.create(
+            model="gpt-4.1-mini",
+            messages = [[
+                {"role": "system", "content": system_prompt}] + [{"role": "user", "content": question}
+            ]]
+        )
+
+        return response.choices[0].message.content
+
 
 
 

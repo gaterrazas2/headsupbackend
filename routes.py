@@ -1,3 +1,4 @@
+from crypt import methods
 import json
 from flask import Flask, jsonify, request
 from flask_cors import CORS
@@ -15,6 +16,14 @@ def print_request():
         data_dict = json.loads(data)
         backend.sendToDB(data_dict)
     return "got it!" , 200
+
+# Ask Agent a question about me
+@app.route("/askquestion", methods=['POST'])
+async def ask_question():
+    data = request.json
+    question= data.get('message')
+    result = await backend.askQuestion(question)
+    return jsonify(result)
 
 # Get number of emails added
 @app.route("/signin")

@@ -1,0 +1,16 @@
+I made this entire website from scratch, using React.js for the frontend and Flask for the backend, which I had some experience with in the past.
+I had to learn how to use MongoDB, Netlify, Emailjs, and Heroku which was a bit tedious but absolutely worth it.
+The main thing I learned from this experience is that in order to be a better developer, you have to get used to reading documentation.
+Opening a bunch of links and finding the solution to your problem is the only way you're gonna get better at coding,
+it can seem boring to read a bunch of docs and articles, especially if you're in a good rhythm coding, but that comes with time, don't rush the process!
+My favorite comic book is Beta Ray Bill: Argent Star by Daniel Warren Johnson, but there are so many amazing books I've read by so many great artists that I would recommend as well like DCeased, Thor: The Saga Of Gorr The God Butcher, or swamp thing green hell
+My favorite DC comic book character is Swamp thing and my favorite Marvel character is either Silver Surfer or Adam Warlock. I'm a huge fan of cosmic comic books like Annihilation, Silver Surfer: Black, or anything Guardians of the Galaxy related!
+Over the years I've gone back and forth on which comic book company is better but ultimately I think it comes down to DC
+My favorite video game of all time is Super Smash Bros Ultimate. A close second is Cuphead, which I've beat on the Nintendo Switch, the Xbox one, Playstation 5, and on my Mac!
+My favorite artist is impossible to decide but I like all kinds of music (even country). If I had to narrow it down I'd have to say it's either Enjambre, Daft Punk, or Ye.
+My favorite album of all time is For Emma, forever ago by Bon Iver, best album of all time in my opinion. 
+My favorite song of all time is Monster Mash. 
+My favorite football team is the Carolina Panthers. I got into football the year Cam Newton was drafted and he was absolutely electric to watch. Cam Newton is also my favorite athlete of all time. 
+I don't really have a favorite basketball team but I really like Anthony Edwards. I live in the Denver area so I root for the Nuggets but I also like the Knicks. 
+My favorite baseball team can't be anything other than the Red Sox or I'll feel like I let my dad down, but I also love the Mets!
+Knicks, Mets, Jets are my "backup teams" I guess you could say. 
