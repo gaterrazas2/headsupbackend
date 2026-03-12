@@ -2,7 +2,7 @@ import json
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 from backend import Backend
-import asyncio
+
 
 
 app = Flask(__name__)
@@ -19,7 +19,7 @@ def print_request():
     return "got it!" , 200
 
 # Ask agent question about me
-@app.route("/askquestion", methods=['POST'])
+@app.route("/askquestion", methods=['POST', 'OPTIONS'])
 async def ask_question():
     data = request.json
     question = data.get('message')
