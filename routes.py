@@ -23,14 +23,23 @@ def print_request():
         backend.sendToDB(data_dict)
     return "got it!" , 200
 
-# Ask agent question about me
-@app.route("/askquestion", methods=['POST'])
+@app.route("/askquestion", methods=['POST', 'OPTIONS'])
 async def ask_question():
-    data = request.json
-    question = data.get('message')
-    result = await backend.askQuestion(question)
-
-    return jsonify({"response": result})    
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "No data provided"}), 400
+            
+        question = data.get('message')
+        print(f"Received question: {question}") # Check Heroku logs
+        
+        # Call the backend method
+        result = await backend.askQuestion(question)
+        
+        return jsonify({"response": result})
+    except Exception as e:
+        print(f"Backend Error: {e}")
+        return jsonify({"error": str(e)}), 500 
 
 # Get number of emails added
 @app.route("/signin")
