@@ -3,7 +3,7 @@ from pymongo.mongo_client import MongoClient
 from pymongo.server_api import ServerApi
 from bson import json_util
 from pypdf import PdfReader
-from openai import OpenAI
+from openai import AsyncOpenAI
 from dotenv import load_dotenv
 import os
 
@@ -17,7 +17,7 @@ class Backend:
         self.collection = self.db['Posts']
         self.context = self.load_context()
         self.name = "Gabriel Terrazas"
-        self.openai = OpenAI()
+        self.openai = AsyncOpenAI()
 
     def sendToDB(self, formData):
         # inserting form data in db 
@@ -99,7 +99,7 @@ class Backend:
         system_prompt += f"\n\n## Summary:\n{self.context['summary']}\n\n## LinkedIn Profile:\n{self.context['linkedin']}\n\n"
         system_prompt += f"With this context, please chat with the user, always staying in character as {self.name}."
 
-        response = self.openai.chat.completions.create(
+        response = await self.openai.chat.completions.create(
             model="gpt-4.1-mini",
             messages = [
                 {"role": "system", "content": system_prompt}] + [{"role": "user", "content": question}
