@@ -23,10 +23,9 @@ def print_request():
 async def ask_question():
     data = request.json
     question = data.get('message')
-    # result = await backend.askQuestion(question)
-    print(question)
+    result = await backend.askQuestion(question)
 
-    return jsonify({"response": question})    
+    return jsonify({"response": result})    
 
 # Get number of emails added
 @app.route("/signin")
