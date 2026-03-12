@@ -66,27 +66,27 @@ class Backend:
         serialized_document = [json_util.dumps(document)]
         return serialized_document
 
-    def load_context(self):
-        context = {'summary':'','linkedin':''}
+    # def load_context(self):
+    #     context = {'summary':'','linkedin':''}
 
-        # Build path relative to backend.py
-        base_path = os.path.dirname(__file__)
-        summary_path = os.path.join(base_path, "aboutme", "aboutme.txt")
+    #     # Build path relative to backend.py
+    #     base_path = os.path.dirname(__file__)
+    #     summary_path = os.path.join(base_path, "aboutme", "aboutme.txt")
 
-        with open(summary_path, "r", encoding="utf-8") as f:
-            summary = f.read()
-        context['summary'] = summary
+    #     with open(summary_path, "r", encoding="utf-8") as f:
+    #         summary = f.read()
+    #     context['summary'] = summary
 
-        linkedin_path = os.path.join(base_path, "aboutme", "Profile.pdf")
-        reader = PdfReader(linkedin_path)
-        linkedin = ""
-        for page in reader.pages:
-            text = page.extract_text()
-            if text:
-                linkedin += text
+    #     linkedin_path = os.path.join(base_path, "aboutme", "Profile.pdf")
+    #     reader = PdfReader(linkedin_path)
+    #     linkedin = ""
+    #     for page in reader.pages:
+    #         text = page.extract_text()
+    #         if text:
+    #             linkedin += text
 
-        context['linkedin'] = linkedin
-        return context
+    #     context['linkedin'] = linkedin
+    #     return context
     
     # async def askQuestion(self, question):
     #     system_prompt = f"You are acting as {self.name}. You are answering questions on {self.name}'s website, \
