@@ -26,7 +26,7 @@ class Backend:
         return 
 
     async def getFromDB(self, category):
-        if category in {'comics', 'music', 'games', 'sports', 'events', 'food'}:
+        if category in {'comics', 'music', 'games', 'sports', 'events'}:
             query = {'category': category}
             documents = list(self.collection.find(query))
             # Convert ObjectId to string for serialization
