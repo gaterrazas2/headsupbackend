@@ -7,11 +7,7 @@ from backend import Backend
 
 app = Flask(__name__)
 
-CORS(app, resources={
-    r"/*": {
-        "origins": ["https://lilbroblog.com", "http://localhost:3000"]
-    }
-})
+CORS(app)
 backend = Backend()
 
 # Send to DB
@@ -23,23 +19,23 @@ def print_request():
         backend.sendToDB(data_dict)
     return "got it!" , 200
 
-@app.route("/askquestion", methods=['POST', 'OPTIONS'])
-async def ask_question():
-    try:
-        data = request.get_json()
-        if not data:
-            return jsonify({"error": "No data provided"}), 400
+# @app.route("/askquestion", methods=['POST', 'OPTIONS'])
+# async def ask_question():
+#     try:
+#         data = request.get_json()
+#         if not data:
+#             return jsonify({"error": "No data provided"}), 400
             
-        question = data.get('message')
-        print(f"Received question: {question}") # Check Heroku logs
+#         question = data.get('message')
+#         print(f"Received question: {question}") # Check Heroku logs
         
-        # Call the backend method
-        result = await backend.askQuestion(question)
+#         # Call the backend method
+#         result = await backend.askQuestion(question)
         
-        return jsonify({"response": result})
-    except Exception as e:
-        print(f"Backend Error: {e}")
-        return jsonify({"error": str(e)}), 500 
+#         return jsonify({"response": result})
+#     except Exception as e:
+#         print(f"Backend Error: {e}")
+#         return jsonify({"error": str(e)}), 500 
 
 # Get number of emails added
 @app.route("/signin")
