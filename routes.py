@@ -6,7 +6,7 @@ import asyncio
 
 
 app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
+CORS(app)
 backend = Backend()
 
 # Send to DB
@@ -20,15 +20,13 @@ def print_request():
 
 # Ask agent question about me
 @app.route("/askquestion", methods=['POST'])
-def ask_question():
+async def ask_question():
     data = request.json
     question = data.get('message')
-    
-    result = asyncio.run(backend.askQuestion(question))
-    # Extract just the content text from OpenAI-style response
-    bot_text = result.get('choices', [])[0].get('message', {}).get('content', 'Sorry, went wrong.')
-    
-    return jsonify({"response": bot_text})
+    # result = await backend.askQuestion(question)
+    print(question)
+
+    return jsonify({"response": question})    
 
 # Get number of emails added
 @app.route("/signin")
@@ -82,4 +80,7 @@ async def get_food():
 async def get_shop():
     result = await backend.getShop()
     return jsonify(result)
+
+if __name__ == "__main__":
+    app.run(debug=True, port=5000)
 
