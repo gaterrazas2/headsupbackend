@@ -6,10 +6,12 @@ from backend import Backend
 
 
 app = Flask(__name__)
-CORS(
-    app,
-    resources={r"/*": {"origins": ["https://lilbroblog.com", "http://localhost:3000"]}}
-)
+
+CORS(app, resources={
+    r"/*": {
+        "origins": ["https://lilbroblog.com", "http://localhost:3000"]
+    }
+})
 backend = Backend()
 
 # Send to DB
@@ -22,7 +24,7 @@ def print_request():
     return "got it!" , 200
 
 # Ask agent question about me
-@app.route("/askquestion", methods=['POST', 'OPTIONS'])
+@app.route("/askquestion", methods=['POST'])
 async def ask_question():
     data = request.json
     question = data.get('message')
