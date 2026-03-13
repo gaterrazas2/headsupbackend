@@ -7,7 +7,7 @@ from backend import Backend
 
 app = Flask(__name__)
 
-CORS(app, origins=["https://lilbroblog.com/"])
+CORS(app)
 backend = Backend()
 
 # Send to DB
