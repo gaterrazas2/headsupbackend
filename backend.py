@@ -17,7 +17,7 @@ class Backend:
         self.collection = self.db['Posts']
         self.context = self.load_context()
         self.name = "Gabriel Terrazas"
-        self.openai = OpenAI(base_url="https://api.openai.com/v1")
+        self.openai = OpenAI()
 
     def sendToDB(self, formData):
         # inserting form data in db 
