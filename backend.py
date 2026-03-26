@@ -5,7 +5,7 @@ from bson import json_util
 from pypdf import PdfReader
 from openai import OpenAI
 from dotenv import load_dotenv
-import os
+import os, json
 
 class Backend:
     def __init__(self) -> None:
@@ -109,6 +109,55 @@ class Backend:
         )
 
         return response.choices[0].message.content
+    
+
+    async def getOdds(self, stats):
+        system_prompt = (
+            "You are an MLB betting assistant. "
+            "Analyze the provided baseball game stats and return only valid JSON. "
+            "Do not include markdown fences. "
+            "Do not guarantee outcomes. "
+            "Keep it concise and practical. "
+            "Never use em dashes."
+        )
+
+        user_prompt = f"""
+    Here are the game stats:
+
+    {stats}
+
+    Return valid JSON in this exact shape:
+    {{
+        "summary": "2-3 sentence summary",
+        "bestBet": "short recommendation",
+        "confidence": "Low, Medium, or High",
+        "biggestRisk": "short risk note",
+        "parlayAngle": "short parlay note"
+    }}
+    """
+
+        response = self.openai.chat.completions.create(
+            model="gpt-4.1-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            max_tokens=220
+        )
+
+        content = response.choices[0].message.content
+
+        try:
+            return json.loads(content)
+        except Exception:
+            return {
+                "summary": content,
+                "bestBet": "No structured recommendation returned",
+                "confidence": "Low",
+                "biggestRisk": "Model output was not valid JSON",
+                "parlayAngle": "Use caution"
+            }
+
 
 
 

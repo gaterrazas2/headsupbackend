@@ -40,6 +40,28 @@ async def ask_question():
     except Exception as e:
         print(f"Backend Error: {e}")
         return jsonify({"error": str(e)}), 500
+    
+@app.route("/getodds", methods=['POST', 'OPTIONS'])
+async def get_odds():
+    # Handle preflight OPTIONS request
+    if request.method == "OPTIONS":
+        return '', 200
+
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "No data provided"}), 400
+            
+        stats = data.get('message')
+        print(f"Received stats: {stats}")  # Check Heroku logs
+        
+        # Call your backend method
+        result = await backend.getOdds(stats)
+        
+        return jsonify({"response": result})
+    except Exception as e:
+        print(f"Backend Error: {e}")
+        return jsonify({"error": str(e)}), 500
 
 # Get number of emails added
 @app.route("/signin")
