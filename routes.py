@@ -43,7 +43,6 @@ async def ask_question():
     
 @app.route("/getodds", methods=['POST', 'OPTIONS'])
 async def get_odds():
-    # Handle preflight OPTIONS request
     if request.method == "OPTIONS":
         return '', 200
 
@@ -52,13 +51,25 @@ async def get_odds():
         if not data:
             return jsonify({"error": "No data provided"}), 400
             
-        stats = data.get('message')
-        print(f"Received stats: {stats}")  # Check Heroku logs
-        
-        # Call your backend method
-        result = await backend.getOdds(stats)
-        
-        return jsonify({"response": result})
+        stats = data.get('stats')
+        signals = data.get('signals')
+        matchup = data.get('matchup')
+
+        print(f"Received stats: {stats}")
+        print(f"Received signals: {signals}")
+
+        # Combine everything for AI
+        combined = {
+            "matchup": matchup,
+            "stats": stats,
+            "signals": signals
+        }
+
+        result = await backend.getOdds(combined)
+
+        # 🔥 RETURN DIRECTLY (NOT wrapped in "response")
+        return jsonify(result)
+
     except Exception as e:
         print(f"Backend Error: {e}")
         return jsonify({"error": str(e)}), 500
