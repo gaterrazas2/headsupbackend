@@ -44,15 +44,18 @@ async def ask_question():
 @app.route("/getodds", methods=['POST', 'OPTIONS'])
 async def get_odds():
     if request.method == "OPTIONS":
-        return "", 200
+        return '', 200
 
     try:
         data = request.get_json()
         if not data:
             return jsonify({"error": "No data provided"}), 400
-
+            
+        print(f"Received payload: {data}")
+        
         result = await backend.getOdds(data)
-        return jsonify(result)
+        
+        return jsonify({"response": result})
     except Exception as e:
         print(f"Backend Error: {e}")
         return jsonify({"error": str(e)}), 500

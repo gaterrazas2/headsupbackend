@@ -114,23 +114,25 @@ class Backend:
     
     async def getOdds(self, payload):
         probabilities = self.predictor.calculate_win_probability(payload)
+        player_props = self.predictor.calculate_prop_predictions(payload)
 
         enriched_payload = {
             **payload,
             "modelProbabilities": probabilities,
+            "playerProps": player_props,
         }
 
         system_prompt = (
             "You are an MLB betting assistant. "
-            "Analyze live and pregame baseball betting data and return only valid JSON. "
+            "Analyze live and pregame baseball data and return only valid JSON. "
             "Use the provided game state, score, inning, outs, count, runners on base, "
             "team records, probable pitchers, pitcher handedness, batter handedness, "
-            "batter AVG, OPS, OBP, SLG, pitcher ERA, WHIP, K/9, BB/9, and provided betting signals. "
-            "Use the supplied model probabilities as the primary win percentage estimate. "
+            "batter AVG, OPS, OBP, SLG, pitcher ERA, WHIP, K/9, BB/9, "
+            "the supplied model win probabilities, and the calculated prop predictions. "
             "Do not use or assume sportsbook lines. "
             "Do not include markdown fences. "
             "Do not guarantee outcomes. "
-            "Be concise, practical, and grounded only in the provided data. "
+            "Be concise and grounded only in the provided data. "
             "Never use em dashes."
         )
 
@@ -148,13 +150,24 @@ class Backend:
         "parlayAngle": "short parlay note",
         "homeWinProbability": 0,
         "awayWinProbability": 0,
-        "modelFavorite": "team name"
+        "modelFavorite": "team name",
+        "playerProps": [
+            {{
+                "type": "batter_hit",
+                "player": "player name",
+                "recommendation": "To record a hit",
+                "probability": 0,
+                "reason": "short reason"
+            }}
+        ]
     }}
 
     Rules:
     - homeWinProbability and awayWinProbability must match the supplied model probabilities exactly
     - modelFavorite must match the supplied model favorite exactly
+    - playerProps must match the supplied calculated prop predictions exactly
     - do not invent extra fields
+    - if there are no player props, return an empty array
     """
 
         response = self.openai.chat.completions.create(
@@ -163,7 +176,7 @@ class Backend:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            max_tokens=300,
+            max_tokens=400,
             temperature=0.3,
         )
 
@@ -178,6 +191,7 @@ class Backend:
             "homeWinProbability": probabilities["homeWinProbability"],
             "awayWinProbability": probabilities["awayWinProbability"],
             "modelFavorite": probabilities["modelFavorite"],
+            "playerProps": player_props,
         }
 
         try:
@@ -185,6 +199,7 @@ class Backend:
             parsed["homeWinProbability"] = probabilities["homeWinProbability"]
             parsed["awayWinProbability"] = probabilities["awayWinProbability"]
             parsed["modelFavorite"] = probabilities["modelFavorite"]
+            parsed["playerProps"] = player_props
             return parsed
         except Exception:
             return fallback
