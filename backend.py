@@ -5,6 +5,7 @@ from bson import json_util
 from pypdf import PdfReader
 from openai import OpenAI
 from dotenv import load_dotenv
+from baseball_predictor import BaseballPredictor
 import os, json
 
 class Backend:
@@ -18,6 +19,7 @@ class Backend:
         self.context = self.load_context()
         self.name = "Gabriel Terrazas"
         self.openai = OpenAI()
+        self.predictor = BaseballPredictor()
 
     def sendToDB(self, formData):
         # inserting form data in db 
@@ -110,56 +112,79 @@ class Backend:
 
         return response.choices[0].message.content
     
+    async def getOdds(self, payload):
+        probabilities = self.predictor.calculate_win_probability(payload)
 
-    async def getOdds(self, stats):
+        enriched_payload = {
+            **payload,
+            "modelProbabilities": probabilities,
+        }
+
         system_prompt = (
             "You are an MLB betting assistant. "
-            "Analyze the provided baseball game stats and return only valid JSON. "
+            "Analyze live and pregame baseball betting data and return only valid JSON. "
+            "Use the provided game state, score, inning, outs, count, runners on base, "
+            "team records, probable pitchers, pitcher handedness, batter handedness, "
+            "batter AVG, OPS, OBP, SLG, pitcher ERA, WHIP, K/9, BB/9, and provided betting signals. "
+            "Use the supplied model probabilities as the primary win percentage estimate. "
+            "Do not use or assume sportsbook lines. "
             "Do not include markdown fences. "
             "Do not guarantee outcomes. "
-            "Keep it concise and practical. "
+            "Be concise, practical, and grounded only in the provided data. "
             "Never use em dashes."
         )
 
         user_prompt = f"""
-    Here are the game stats:
+    Here is the live game package:
 
-    {stats}
+    {json.dumps(enriched_payload, indent=2)}
 
     Return valid JSON in this exact shape:
     {{
-        "summary": "2-3 sentence summary",
+        "summary": "2-3 sentence live betting summary",
         "bestBet": "short recommendation",
         "confidence": "Low, Medium, or High",
         "biggestRisk": "short risk note",
-        "parlayAngle": "short parlay note"
+        "parlayAngle": "short parlay note",
+        "homeWinProbability": 0,
+        "awayWinProbability": 0,
+        "modelFavorite": "team name"
     }}
+
+    Rules:
+    - homeWinProbability and awayWinProbability must match the supplied model probabilities exactly
+    - modelFavorite must match the supplied model favorite exactly
+    - do not invent extra fields
     """
 
         response = self.openai.chat.completions.create(
             model="gpt-4.1-mini",
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
+                {"role": "user", "content": user_prompt},
             ],
-            max_tokens=220
+            max_tokens=300,
+            temperature=0.3,
         )
 
         content = response.choices[0].message.content
 
+        fallback = {
+            "summary": "Model-generated game analysis is available, but the AI explanation was not returned in valid JSON.",
+            "bestBet": f"{probabilities['modelFavorite']} side",
+            "confidence": "Low",
+            "biggestRisk": "Model output was not valid JSON",
+            "parlayAngle": "Use caution",
+            "homeWinProbability": probabilities["homeWinProbability"],
+            "awayWinProbability": probabilities["awayWinProbability"],
+            "modelFavorite": probabilities["modelFavorite"],
+        }
+
         try:
-            return json.loads(content)
+            parsed = json.loads(content)
+            parsed["homeWinProbability"] = probabilities["homeWinProbability"]
+            parsed["awayWinProbability"] = probabilities["awayWinProbability"]
+            parsed["modelFavorite"] = probabilities["modelFavorite"]
+            return parsed
         except Exception:
-            return {
-                "summary": content,
-                "bestBet": "No structured recommendation returned",
-                "confidence": "Low",
-                "biggestRisk": "Model output was not valid JSON",
-                "parlayAngle": "Use caution"
-            }
-
-
-
-
-
-
+            return fallback

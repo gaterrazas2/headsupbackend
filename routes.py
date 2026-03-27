@@ -44,32 +44,15 @@ async def ask_question():
 @app.route("/getodds", methods=['POST', 'OPTIONS'])
 async def get_odds():
     if request.method == "OPTIONS":
-        return '', 200
+        return "", 200
 
     try:
         data = request.get_json()
         if not data:
             return jsonify({"error": "No data provided"}), 400
-            
-        stats = data.get('stats')
-        signals = data.get('signals')
-        matchup = data.get('matchup')
 
-        print(f"Received stats: {stats}")
-        print(f"Received signals: {signals}")
-
-        # Combine everything for AI
-        combined = {
-            "matchup": matchup,
-            "stats": stats,
-            "signals": signals
-        }
-
-        result = await backend.getOdds(combined)
-
-        # 🔥 RETURN DIRECTLY (NOT wrapped in "response")
+        result = await backend.getOdds(data)
         return jsonify(result)
-
     except Exception as e:
         print(f"Backend Error: {e}")
         return jsonify({"error": str(e)}), 500
