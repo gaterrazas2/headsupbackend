@@ -114,25 +114,27 @@ class Backend:
     
     async def getOdds(self, payload):
         probabilities = self.predictor.calculate_win_probability(payload)
-        player_props = self.predictor.calculate_prop_predictions(payload)
+        props = self.predictor.calculate_props(payload)
 
         enriched_payload = {
             **payload,
             "modelProbabilities": probabilities,
-            "playerProps": player_props,
+            "props": props,
         }
 
         system_prompt = (
             "You are an MLB betting assistant. "
             "Analyze live and pregame baseball data and return only valid JSON. "
-            "Use the provided game state, score, inning, outs, count, runners on base, "
-            "team records, probable pitchers, pitcher handedness, batter handedness, "
-            "batter AVG, OPS, OBP, SLG, pitcher ERA, WHIP, K/9, BB/9, "
-            "the supplied model win probabilities, and the calculated prop predictions. "
+            "Use all provided metrics, including team records, probable pitchers, "
+            "pitcher handedness, batter handedness, batter AVG, OPS, OBP, SLG, "
+            "pitcher ERA, WHIP, K/9, BB/9, current score, inning, outs, count, "
+            "runners on base, the provided betting signals, the model win probabilities, "
+            "and the calculated props. "
             "Do not use or assume sportsbook lines. "
             "Do not include markdown fences. "
             "Do not guarantee outcomes. "
-            "Be concise and grounded only in the provided data. "
+            "The props already provided are the only ones that should be recommended. "
+            "Be concise, practical, and grounded only in the provided data. "
             "Never use em dashes."
         )
 
@@ -143,7 +145,7 @@ class Backend:
 
     Return valid JSON in this exact shape:
     {{
-        "summary": "2-3 sentence live betting summary",
+        "summary": "2-3 sentence betting summary using the metrics provided",
         "bestBet": "short recommendation",
         "confidence": "Low, Medium, or High",
         "biggestRisk": "short risk note",
@@ -151,12 +153,14 @@ class Backend:
         "homeWinProbability": 0,
         "awayWinProbability": 0,
         "modelFavorite": "team name",
-        "playerProps": [
+        "props": [
             {{
                 "type": "batter_hit",
                 "player": "player name",
                 "recommendation": "To record a hit",
+                "estimatedValue": 0,
                 "probability": 0,
+                "valueScore": 0,
                 "reason": "short reason"
             }}
         ]
@@ -165,9 +169,10 @@ class Backend:
     Rules:
     - homeWinProbability and awayWinProbability must match the supplied model probabilities exactly
     - modelFavorite must match the supplied model favorite exactly
-    - playerProps must match the supplied calculated prop predictions exactly
+    - props must match the supplied calculated props exactly
     - do not invent extra fields
-    - if there are no player props, return an empty array
+    - if a prop does not have estimatedValue, it is okay for it to be absent
+    - if there are no props, return an empty array
     """
 
         response = self.openai.chat.completions.create(
@@ -176,7 +181,7 @@ class Backend:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            max_tokens=400,
+            max_tokens=500,
             temperature=0.3,
         )
 
@@ -191,7 +196,7 @@ class Backend:
             "homeWinProbability": probabilities["homeWinProbability"],
             "awayWinProbability": probabilities["awayWinProbability"],
             "modelFavorite": probabilities["modelFavorite"],
-            "playerProps": player_props,
+            "props": props,
         }
 
         try:
@@ -199,7 +204,7 @@ class Backend:
             parsed["homeWinProbability"] = probabilities["homeWinProbability"]
             parsed["awayWinProbability"] = probabilities["awayWinProbability"]
             parsed["modelFavorite"] = probabilities["modelFavorite"]
-            parsed["playerProps"] = player_props
+            parsed["props"] = props
             return parsed
         except Exception:
             return fallback
