@@ -54,9 +54,9 @@ class BaseballPredictor:
         pitcher_is_left = "Left" in pitcher_hand
 
         if batter_is_left != pitcher_is_left:
-            return 0.18
+            return 0.12
 
-        return -0.08
+        return -0.05
 
     def _build_reason(self, reasons):
         filtered = [reason for reason in reasons if reason]
@@ -80,6 +80,27 @@ class BaseballPredictor:
         rounded = math.floor(value) + 0.5
         return max(minimum, rounded)
 
+    def _team_offense_score(self, offense):
+        if not offense:
+            return 0.0
+
+        avg = self._safe_float(offense.get("avg"))
+        obp = self._safe_float(offense.get("obp"))
+        ops = self._safe_float(offense.get("ops"))
+        slg = self._safe_float(offense.get("slg"))
+
+        score = 0.0
+        if avg is not None:
+            score += (avg - 0.245) * 10.0
+        if obp is not None:
+            score += (obp - 0.315) * 6.0
+        if ops is not None:
+            score += (ops - 0.720) * 2.8
+        if slg is not None:
+            score += (slg - 0.400) * 3.5
+
+        return score
+
     def calculate_win_probability(self, payload):
         stats = payload.get("stats", {}) or {}
         signals = payload.get("signals", {}) or {}
@@ -98,14 +119,18 @@ class BaseballPredictor:
         home_whip = self._safe_float(home_starter.get("whip"))
         away_whip = self._safe_float(away_starter.get("whip"))
 
+        home_offense = stats.get("teamOffense", {}).get("home", {}) or {}
+        away_offense = stats.get("teamOffense", {}).get("away", {}) or {}
+
+        home_offense_score = self._team_offense_score(home_offense)
+        away_offense_score = self._team_offense_score(away_offense)
+
         live_state = stats.get("liveState", {}) or {}
         current_matchup = stats.get("currentMatchup", {}) or {}
 
         batter = current_matchup.get("batter", {}) or {}
         pitcher = current_matchup.get("pitcher", {}) or {}
 
-        batter_avg = self._safe_float(batter.get("avg"))
-        batter_ops = self._safe_float(batter.get("ops"))
         pitcher_era = self._safe_float(pitcher.get("era"))
         pitcher_whip = self._safe_float(pitcher.get("whip"))
 
@@ -123,62 +148,49 @@ class BaseballPredictor:
             ]
         )
 
-        batter_side = batter.get("batSide")
-        pitcher_hand = pitcher.get("pitchHand")
-
         raw_score = 0.0
 
         if home_record_pct is not None and away_record_pct is not None:
-            raw_score += (home_record_pct - away_record_pct) * 2.0
+            raw_score += (home_record_pct - away_record_pct) * 1.8
+
+        raw_score += (home_offense_score - away_offense_score) * 0.45
 
         if home_era is not None and away_era is not None:
-            raw_score += ((away_era - home_era) / 2.0) * 0.9
+            raw_score += ((away_era - home_era) / 2.0) * 0.8
 
         if home_whip is not None and away_whip is not None:
-            raw_score += (away_whip - home_whip) * 0.7
+            raw_score += (away_whip - home_whip) * 0.6
 
         if home_runs is not None and away_runs is not None:
             score_diff = home_runs - away_runs
             raw_score += score_diff * (0.28 + 0.06 * inning_number)
 
-        if batter_ops is not None:
-            raw_score += (batter_ops - 0.720) * (-1.1)
-
-        if batter_avg is not None:
-            raw_score += (batter_avg - 0.250) * (-2.0)
-
         if pitcher_whip is not None:
-            raw_score += (1.25 - pitcher_whip) * 0.75
+            raw_score += (1.25 - pitcher_whip) * 0.18
 
         if pitcher_era is not None:
-            raw_score += (4.00 - pitcher_era) * 0.18
+            raw_score += (4.00 - pitcher_era) * 0.05
 
-        raw_score -= self._get_handedness_edge(batter_side, pitcher_hand) * 0.5
-
+        # Light live pressure adjustment only
         if outs is not None and runner_count > 0:
             if outs <= 1:
-                raw_score += runner_count * (-0.07)
-            else:
                 raw_score += runner_count * (-0.03)
+            else:
+                raw_score += runner_count * (-0.015)
 
+        # Frontend signal adjustments
         favorite = signals.get("favorite")
         total_lean = signals.get("totalLean")
-        current_at_bat_edge = signals.get("currentAtBatEdge")
         pitcher_lean = signals.get("pitcherLean")
 
         if favorite == home_team:
-            raw_score += 0.18
+            raw_score += 0.12
         elif favorite == away_team:
-            raw_score -= 0.18
+            raw_score -= 0.12
 
         if pitcher_lean and home_team in pitcher_lean:
-            raw_score += 0.14
-        elif pitcher_lean and away_team in pitcher_lean:
-            raw_score -= 0.14
-
-        if current_at_bat_edge == "Current pitcher in a strong spot":
             raw_score += 0.10
-        elif current_at_bat_edge == "Current batter in a strong spot":
+        elif pitcher_lean and away_team in pitcher_lean:
             raw_score -= 0.10
 
         if total_lean == "Lean under":
@@ -203,6 +215,7 @@ class BaseballPredictor:
     def _calculate_batter_hit_prop(self, payload):
         stats = payload.get("stats", {}) or {}
         current_matchup = stats.get("currentMatchup", {}) or {}
+        team_offense = stats.get("teamOffense", {}) or {}
 
         batter = current_matchup.get("batter", {}) or {}
         pitcher = current_matchup.get("pitcher", {}) or {}
@@ -221,41 +234,71 @@ class BaseballPredictor:
         batter_side = batter.get("batSide")
         pitcher_hand = pitcher.get("pitchHand")
 
+        # Use both batter and team context
+        home_team = stats.get("homeTeam")
+        away_team = stats.get("awayTeam")
+        probable_home = stats.get("probablePitchers", {}).get("home", {}) or {}
+        probable_away = stats.get("probablePitchers", {}).get("away", {}) or {}
+
+        # infer batting team by live pitcher/probable side if possible
+        batting_team_offense = None
+        if pitcher.get("fullName") and probable_home.get("fullName") and pitcher.get("fullName") == probable_home.get("fullName"):
+            batting_team_offense = team_offense.get("away", {})
+        elif pitcher.get("fullName") and probable_away.get("fullName") and pitcher.get("fullName") == probable_away.get("fullName"):
+            batting_team_offense = team_offense.get("home", {})
+        else:
+            batting_team_offense = team_offense.get("home", {}) or team_offense.get("away", {})
+
+        team_avg = self._safe_float((batting_team_offense or {}).get("avg"))
+        team_ops = self._safe_float((batting_team_offense or {}).get("ops"))
+        team_obp = self._safe_float((batting_team_offense or {}).get("obp"))
+        team_slg = self._safe_float((batting_team_offense or {}).get("slg"))
+
         score = 0.0
         reasons = []
 
         if batter_avg is not None:
-            score += (batter_avg - 0.245) * 7.2
+            score += (batter_avg - 0.245) * 5.0
             if batter_avg >= 0.280:
                 reasons.append("strong batting average")
 
         if batter_obp is not None:
-            score += (batter_obp - 0.315) * 3.6
-            if batter_obp >= 0.340:
-                reasons.append("good on base profile")
+            score += (batter_obp - 0.315) * 2.0
 
         if batter_ops is not None:
-            score += (batter_ops - 0.720) * 1.0
+            score += (batter_ops - 0.720) * 0.8
             if batter_ops >= 0.800:
                 reasons.append("strong overall hitting profile")
 
         if batter_slg is not None:
-            score += (batter_slg - 0.400) * 0.9
-            if batter_slg >= 0.470:
-                reasons.append("quality contact authority")
+            score += (batter_slg - 0.400) * 0.7
+
+        if team_avg is not None:
+            score += (team_avg - 0.245) * 3.0
+            if team_avg >= 0.255:
+                reasons.append("supportive team batting average")
+
+        if team_ops is not None:
+            score += (team_ops - 0.720) * 0.9
+
+        if team_obp is not None:
+            score += (team_obp - 0.315) * 1.4
+
+        if team_slg is not None:
+            score += (team_slg - 0.400) * 1.2
+            if team_slg >= 0.420:
+                reasons.append("solid lineup power context")
 
         if pitcher_whip is not None:
-            score += (pitcher_whip - 1.25) * 0.75
+            score += (pitcher_whip - 1.25) * 0.6
             if pitcher_whip >= 1.30:
                 reasons.append("pitcher allows baserunners")
 
         if pitcher_era is not None:
-            score += (pitcher_era - 4.00) * 0.07
-            if pitcher_era >= 4.30:
-                reasons.append("pitcher is easier to attack")
+            score += (pitcher_era - 4.00) * 0.06
 
         handedness_edge = self._get_handedness_edge(batter_side, pitcher_hand)
-        score += handedness_edge * 0.45
+        score += handedness_edge * 0.35
         if handedness_edge > 0:
             reasons.append("favorable handedness matchup")
 
@@ -277,18 +320,15 @@ class BaseballPredictor:
 
     def _calculate_pitcher_strikeout_prop(self, payload):
         stats = payload.get("stats", {}) or {}
+        team_offense = stats.get("teamOffense", {}) or {}
         current_matchup = stats.get("currentMatchup", {}) or {}
         probable_pitchers = stats.get("probablePitchers", {}) or {}
 
         pitcher = current_matchup.get("pitcher", {}) or {}
-        batter = current_matchup.get("batter", {}) or {}
-
         pitcher_name = pitcher.get("fullName")
         k9 = self._safe_float(pitcher.get("strikeoutsPer9Inn"))
         whip = self._safe_float(pitcher.get("whip"))
         era = self._safe_float(pitcher.get("era"))
-        batter_avg = self._safe_float(batter.get("avg"))
-        batter_ops = self._safe_float(batter.get("ops"))
 
         if not pitcher_name or pitcher_name == "N/A":
             home_pitcher = probable_pitchers.get("home", {}) or {}
@@ -311,6 +351,22 @@ class BaseballPredictor:
         if not pitcher_name or pitcher_name == "N/A":
             return None
 
+        # Use opposing lineup/team offense, not just current batter
+        probable_home = probable_pitchers.get("home", {}) or {}
+        probable_away = probable_pitchers.get("away", {}) or {}
+
+        opposing_offense = None
+        if pitcher_name == probable_home.get("fullName"):
+            opposing_offense = team_offense.get("away", {})
+        elif pitcher_name == probable_away.get("fullName"):
+            opposing_offense = team_offense.get("home", {})
+        else:
+            opposing_offense = team_offense.get("away", {}) or team_offense.get("home", {})
+
+        team_avg = self._safe_float((opposing_offense or {}).get("avg"))
+        team_ops = self._safe_float((opposing_offense or {}).get("ops"))
+        team_obp = self._safe_float((opposing_offense or {}).get("obp"))
+
         reasons = []
 
         expected_strikeouts = 4.7
@@ -321,22 +377,25 @@ class BaseballPredictor:
                 reasons.append("strong strikeout rate")
 
         if whip is not None:
-            expected_strikeouts += (1.22 - whip) * 0.95
+            expected_strikeouts += (1.22 - whip) * 0.9
             if whip <= 1.15:
                 reasons.append("good command profile")
 
         if era is not None:
             expected_strikeouts += (4.00 - era) * 0.10
 
-        if batter_avg is not None:
-            expected_strikeouts += (0.245 - batter_avg) * 5.5
-            if batter_avg <= 0.240:
-                reasons.append("current hitter has weaker contact profile")
+        if team_avg is not None:
+            expected_strikeouts += (0.245 - team_avg) * 5.0
+            if team_avg <= 0.240:
+                reasons.append("opposing lineup has weaker contact profile")
 
-        if batter_ops is not None:
-            expected_strikeouts += (0.720 - batter_ops) * 1.1
-            if batter_ops <= 0.700:
-                reasons.append("favorable hitting matchup")
+        if team_ops is not None:
+            expected_strikeouts += (0.720 - team_ops) * 1.2
+            if team_ops <= 0.700:
+                reasons.append("opposing lineup is less dangerous")
+
+        if team_obp is not None:
+            expected_strikeouts += (0.315 - team_obp) * 2.0
 
         estimated_value = self._clamp(expected_strikeouts, 2.5, 11.5)
         display_line = self._nearest_half_line(estimated_value)
@@ -367,6 +426,7 @@ class BaseballPredictor:
     def _calculate_batter_total_bases_prop(self, payload):
         stats = payload.get("stats", {}) or {}
         current_matchup = stats.get("currentMatchup", {}) or {}
+        team_offense = stats.get("teamOffense", {}) or {}
 
         batter = current_matchup.get("batter", {}) or {}
         pitcher = current_matchup.get("pitcher", {}) or {}
@@ -385,40 +445,68 @@ class BaseballPredictor:
         batter_side = batter.get("batSide")
         pitcher_hand = pitcher.get("pitchHand")
 
+        probable_home = stats.get("probablePitchers", {}).get("home", {}) or {}
+        probable_away = stats.get("probablePitchers", {}).get("away", {}) or {}
+
+        batting_team_offense = None
+        if pitcher.get("fullName") and probable_home.get("fullName") and pitcher.get("fullName") == probable_home.get("fullName"):
+            batting_team_offense = team_offense.get("away", {})
+        elif pitcher.get("fullName") and probable_away.get("fullName") and pitcher.get("fullName") == probable_away.get("fullName"):
+            batting_team_offense = team_offense.get("home", {})
+        else:
+            batting_team_offense = team_offense.get("home", {}) or team_offense.get("away", {})
+
+        team_avg = self._safe_float((batting_team_offense or {}).get("avg"))
+        team_ops = self._safe_float((batting_team_offense or {}).get("ops"))
+        team_obp = self._safe_float((batting_team_offense or {}).get("obp"))
+        team_slg = self._safe_float((batting_team_offense or {}).get("slg"))
+
         reasons = []
 
         expected_total_bases = 1.0
 
         if batter_avg is not None:
-            expected_total_bases += (batter_avg - 0.245) * 3.5
+            expected_total_bases += (batter_avg - 0.245) * 2.8
             if batter_avg >= 0.275:
                 reasons.append("strong contact profile")
 
         if batter_obp is not None:
-            expected_total_bases += (batter_obp - 0.315) * 1.2
+            expected_total_bases += (batter_obp - 0.315) * 1.0
 
         if batter_ops is not None:
-            expected_total_bases += (batter_ops - 0.720) * 1.7
+            expected_total_bases += (batter_ops - 0.720) * 1.4
             if batter_ops >= 0.800:
                 reasons.append("good overall hitting profile")
 
         if batter_slg is not None:
-            expected_total_bases += (batter_slg - 0.400) * 3.0
+            expected_total_bases += (batter_slg - 0.400) * 2.4
             if batter_slg >= 0.470:
                 reasons.append("strong slugging profile")
 
+        if team_avg is not None:
+            expected_total_bases += (team_avg - 0.245) * 1.6
+
+        if team_ops is not None:
+            expected_total_bases += (team_ops - 0.720) * 0.9
+
+        if team_obp is not None:
+            expected_total_bases += (team_obp - 0.315) * 1.1
+
+        if team_slg is not None:
+            expected_total_bases += (team_slg - 0.400) * 1.7
+            if team_slg >= 0.420:
+                reasons.append("solid lineup power context")
+
         if pitcher_whip is not None:
-            expected_total_bases += (pitcher_whip - 1.25) * 0.8
+            expected_total_bases += (pitcher_whip - 1.25) * 0.7
             if pitcher_whip >= 1.30:
                 reasons.append("pitcher allows extra traffic")
 
         if pitcher_era is not None:
-            expected_total_bases += (pitcher_era - 4.00) * 0.10
-            if pitcher_era >= 4.30:
-                reasons.append("pitcher is vulnerable to damage")
+            expected_total_bases += (pitcher_era - 4.00) * 0.08
 
         handedness_edge = self._get_handedness_edge(batter_side, pitcher_hand)
-        expected_total_bases += handedness_edge * 0.65
+        expected_total_bases += handedness_edge * 0.5
         if handedness_edge > 0:
             reasons.append("favorable split for power contact")
 
@@ -474,11 +562,9 @@ class BaseballPredictor:
 
         stats = payload.get("stats", {}) or {}
         probabilities = self.calculate_win_probability(payload)
-
         home_team = stats.get("homeTeam", "Home Team")
         away_team = stats.get("awayTeam", "Away Team")
         favorite = probabilities.get("modelFavorite")
-
         home_prob = probabilities.get("homeWinProbability", 50)
         away_prob = probabilities.get("awayWinProbability", 50)
 
@@ -495,7 +581,7 @@ class BaseballPredictor:
 
         if favorite == home_team:
             ml_probability = home_prob
-            ml_reason = "model favors the home team based on current game state"
+            ml_reason = "model favors the home team based on score, record, team offense, and pitching context"
             if score_diff > 0:
                 ml_reason = "home team leads and the model still favors them"
             props.append(
@@ -510,7 +596,7 @@ class BaseballPredictor:
             )
         else:
             ml_probability = away_prob
-            ml_reason = "model favors the away team based on current game state"
+            ml_reason = "model favors the away team based on score, record, team offense, and pitching context"
             if score_diff < 0:
                 ml_reason = "away team leads and the model still favors them"
             props.append(
@@ -555,7 +641,7 @@ class BaseballPredictor:
                 "estimatedValue": round(estimated_margin, 1),
                 "probability": spread_probability,
                 "valueScore": round((spread_probability - 50) + (abs(estimated_margin - 1.5) * 6), 1),
-                "reason": "spread lean is based on model edge, score state, and inning context",
+                "reason": "spread lean is based on model edge, current score state, and inning context",
             }
         )
 
