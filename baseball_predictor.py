@@ -539,24 +539,23 @@ class BaseballPredictor:
 
         estimated_value = self._clamp(expected_total_bases, 0.3, 3.5)
         display_line = 1.5
-        edge = abs(estimated_value - display_line)
+        edge = estimated_value - display_line
 
-        base_prob = self._sigmoid((estimated_value - display_line) * 2.3)
-        probability = self._clamp(max(base_prob, 1 - base_prob), 0.40, 0.80)
-        probability_pct = round(probability * 100)
+        # Only calculate the over side
+        over_probability = self._sigmoid(edge * 2.3)
+        over_probability = self._clamp(over_probability, 0.20, 0.80)
+        probability_pct = round(over_probability * 100)
 
-        recommendation = (
-            "Lean over 1.5 total bases"
-            if estimated_value >= display_line
-            else "Lean under 1.5 total bases"
-        )
+        # If the model does not like the over, do not suggest anything
+        if estimated_value < display_line or probability_pct < 65:
+            return None
 
         value_score = round((probability_pct - 50) + (edge * 10), 1)
 
         return {
             "type": "batter_total_bases",
             "player": batter_name,
-            "recommendation": recommendation,
+            "recommendation": "Over 1.5 total bases",
             "estimatedValue": round(estimated_value, 1),
             "probability": probability_pct,
             "valueScore": value_score,
