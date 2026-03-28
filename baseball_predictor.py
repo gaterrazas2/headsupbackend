@@ -163,7 +163,13 @@ class BaseballPredictor:
 
         if home_runs is not None and away_runs is not None:
             score_diff = home_runs - away_runs
-            raw_score += score_diff * (0.28 + 0.06 * inning_number)
+
+            # Use only current game run differential
+            # Keep it modest early and stronger later
+            capped_diff = self._clamp(score_diff, -4, 4)
+            inning_weight = min(0.10 + (inning_number * 0.05), 0.45)
+
+            raw_score += capped_diff * inning_weight
 
         if pitcher_whip is not None:
             raw_score += (1.25 - pitcher_whip) * 0.18
@@ -611,9 +617,14 @@ class BaseballPredictor:
             )
 
         if favorite == home_team:
+            score_component = 0.0
+            if home_runs is not None and away_runs is not None:
+                capped_diff = self._clamp(abs(score_diff), 0, 4)
+                score_component = capped_diff * min(0.08 + (inning_number * 0.03), 0.25)
+
             estimated_margin = max(
                 0.5,
-                (home_prob - 50) / 18 + max(score_diff, 0) * 0.45 + inning_number * 0.03,
+                (home_prob - 50) / 18 + score_component
             )
             spread_recommendation = (
                 f"{home_team} -1.5"
@@ -622,9 +633,14 @@ class BaseballPredictor:
             )
             spread_probability = max(55, min(80, home_prob))
         else:
+            score_component = 0.0
+            if home_runs is not None and away_runs is not None:
+                capped_diff = self._clamp(abs(score_diff), 0, 4)
+                score_component = capped_diff * min(0.08 + (inning_number * 0.03), 0.25)
+
             estimated_margin = max(
                 0.5,
-                (away_prob - 50) / 18 + max(-score_diff, 0) * 0.45 + inning_number * 0.03,
+                (home_prob - 50) / 18 + score_component
             )
             spread_recommendation = (
                 f"{away_team} -1.5"
