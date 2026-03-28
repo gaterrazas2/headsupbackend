@@ -101,6 +101,58 @@ class BaseballPredictor:
 
         return score
 
+    def _get_pitcher_side(self, stats, pitcher_name):
+        probable_home = stats.get("probablePitchers", {}).get("home", {}) or {}
+        probable_away = stats.get("probablePitchers", {}).get("away", {}) or {}
+
+        if pitcher_name and probable_home.get("fullName") == pitcher_name:
+            return "home"
+        if pitcher_name and probable_away.get("fullName") == pitcher_name:
+            return "away"
+
+        current_pitcher = stats.get("currentMatchup", {}).get("pitcher", {}) or {}
+        current_pitcher_name = current_pitcher.get("fullName")
+        if current_pitcher_name and current_pitcher_name == pitcher_name:
+            # If current pitcher matches but probable did not, infer from live state not available.
+            # Return None and let caller use a neutral fallback.
+            return None
+
+        return None
+
+    def _get_opposing_team_offense_for_pitcher(self, stats, pitcher_name):
+        team_offense = stats.get("teamOffense", {}) or {}
+        pitcher_side = self._get_pitcher_side(stats, pitcher_name)
+
+        if pitcher_side == "home":
+            return team_offense.get("away", {}) or {}
+        if pitcher_side == "away":
+            return team_offense.get("home", {}) or {}
+
+        home_offense = team_offense.get("home", {}) or {}
+        away_offense = team_offense.get("away", {}) or {}
+
+        home_score = self._team_offense_score(home_offense)
+        away_score = self._team_offense_score(away_offense)
+
+        return away_offense if away_score >= home_score else home_offense
+
+    def _get_batting_team_offense_for_current_matchup(self, stats, pitcher_name):
+        team_offense = stats.get("teamOffense", {}) or {}
+        pitcher_side = self._get_pitcher_side(stats, pitcher_name)
+
+        if pitcher_side == "home":
+            return team_offense.get("away", {}) or {}
+        if pitcher_side == "away":
+            return team_offense.get("home", {}) or {}
+
+        home_offense = team_offense.get("home", {}) or {}
+        away_offense = team_offense.get("away", {}) or {}
+
+        home_score = self._team_offense_score(home_offense)
+        away_score = self._team_offense_score(away_offense)
+
+        return away_offense if away_score >= home_score else home_offense
+
     def calculate_win_probability(self, payload):
         stats = payload.get("stats", {}) or {}
         signals = payload.get("signals", {}) or {}
@@ -127,8 +179,6 @@ class BaseballPredictor:
 
         live_state = stats.get("liveState", {}) or {}
         current_matchup = stats.get("currentMatchup", {}) or {}
-
-        batter = current_matchup.get("batter", {}) or {}
         pitcher = current_matchup.get("pitcher", {}) or {}
 
         pitcher_era = self._safe_float(pitcher.get("era"))
@@ -161,21 +211,19 @@ class BaseballPredictor:
         if home_whip is not None and away_whip is not None:
             raw_score += (away_whip - home_whip) * 0.6
 
+        # Current game score only, lightly weighted early and capped
         if home_runs is not None and away_runs is not None:
             score_diff = home_runs - away_runs
-
-            # Use only current game run differential
-            # Keep it modest early and stronger later
             capped_diff = self._clamp(score_diff, -4, 4)
             inning_weight = min(0.10 + (inning_number * 0.05), 0.45)
-
             raw_score += capped_diff * inning_weight
 
+        # Tiny live current-pitcher context only
         if pitcher_whip is not None:
-            raw_score += (1.25 - pitcher_whip) * 0.18
+            raw_score += (1.25 - pitcher_whip) * 0.12
 
         if pitcher_era is not None:
-            raw_score += (4.00 - pitcher_era) * 0.05
+            raw_score += (4.00 - pitcher_era) * 0.04
 
         # Light live pressure adjustment only
         if outs is not None and runner_count > 0:
@@ -184,9 +232,7 @@ class BaseballPredictor:
             else:
                 raw_score += runner_count * (-0.015)
 
-        # Frontend signal adjustments
         favorite = signals.get("favorite")
-        total_lean = signals.get("totalLean")
         pitcher_lean = signals.get("pitcherLean")
 
         if favorite == home_team:
@@ -198,11 +244,6 @@ class BaseballPredictor:
             raw_score += 0.10
         elif pitcher_lean and away_team in pitcher_lean:
             raw_score -= 0.10
-
-        if total_lean == "Lean under":
-            raw_score += 0.02
-        elif total_lean == "Lean over":
-            raw_score -= 0.02
 
         home_prob = self._sigmoid(raw_score)
         home_prob = self._clamp(home_prob, 0.01, 0.99)
@@ -221,7 +262,6 @@ class BaseballPredictor:
     def _calculate_batter_hit_prop(self, payload):
         stats = payload.get("stats", {}) or {}
         current_matchup = stats.get("currentMatchup", {}) or {}
-        team_offense = stats.get("teamOffense", {}) or {}
 
         batter = current_matchup.get("batter", {}) or {}
         pitcher = current_matchup.get("pitcher", {}) or {}
@@ -239,21 +279,11 @@ class BaseballPredictor:
 
         batter_side = batter.get("batSide")
         pitcher_hand = pitcher.get("pitchHand")
+        pitcher_name = pitcher.get("fullName")
 
-        # Use both batter and team context
-        home_team = stats.get("homeTeam")
-        away_team = stats.get("awayTeam")
-        probable_home = stats.get("probablePitchers", {}).get("home", {}) or {}
-        probable_away = stats.get("probablePitchers", {}).get("away", {}) or {}
-
-        # infer batting team by live pitcher/probable side if possible
-        batting_team_offense = None
-        if pitcher.get("fullName") and probable_home.get("fullName") and pitcher.get("fullName") == probable_home.get("fullName"):
-            batting_team_offense = team_offense.get("away", {})
-        elif pitcher.get("fullName") and probable_away.get("fullName") and pitcher.get("fullName") == probable_away.get("fullName"):
-            batting_team_offense = team_offense.get("home", {})
-        else:
-            batting_team_offense = team_offense.get("home", {}) or team_offense.get("away", {})
+        batting_team_offense = self._get_batting_team_offense_for_current_matchup(
+            stats, pitcher_name
+        )
 
         team_avg = self._safe_float((batting_team_offense or {}).get("avg"))
         team_ops = self._safe_float((batting_team_offense or {}).get("ops"))
@@ -326,7 +356,6 @@ class BaseballPredictor:
 
     def _calculate_pitcher_strikeout_prop(self, payload):
         stats = payload.get("stats", {}) or {}
-        team_offense = stats.get("teamOffense", {}) or {}
         current_matchup = stats.get("currentMatchup", {}) or {}
         probable_pitchers = stats.get("probablePitchers", {}) or {}
 
@@ -357,24 +386,15 @@ class BaseballPredictor:
         if not pitcher_name or pitcher_name == "N/A":
             return None
 
-        # Use opposing lineup/team offense, not just current batter
-        probable_home = probable_pitchers.get("home", {}) or {}
-        probable_away = probable_pitchers.get("away", {}) or {}
-
-        opposing_offense = None
-        if pitcher_name == probable_home.get("fullName"):
-            opposing_offense = team_offense.get("away", {})
-        elif pitcher_name == probable_away.get("fullName"):
-            opposing_offense = team_offense.get("home", {})
-        else:
-            opposing_offense = team_offense.get("away", {}) or team_offense.get("home", {})
+        # Correct logic: use the lineup THIS pitcher is facing
+        opposing_offense = self._get_opposing_team_offense_for_pitcher(stats, pitcher_name)
 
         team_avg = self._safe_float((opposing_offense or {}).get("avg"))
         team_ops = self._safe_float((opposing_offense or {}).get("ops"))
         team_obp = self._safe_float((opposing_offense or {}).get("obp"))
+        team_strikeouts = self._safe_float((opposing_offense or {}).get("strikeOuts"))
 
         reasons = []
-
         expected_strikeouts = 4.7
 
         if k9 is not None:
@@ -390,6 +410,7 @@ class BaseballPredictor:
         if era is not None:
             expected_strikeouts += (4.00 - era) * 0.10
 
+        # Opposing lineup contact quality
         if team_avg is not None:
             expected_strikeouts += (0.245 - team_avg) * 5.0
             if team_avg <= 0.240:
@@ -402,6 +423,14 @@ class BaseballPredictor:
 
         if team_obp is not None:
             expected_strikeouts += (0.315 - team_obp) * 2.0
+
+        # Most important lineup-specific K tendency input
+        if team_strikeouts is not None:
+            expected_strikeouts += (team_strikeouts - 1200.0) / 220.0
+            if team_strikeouts >= 1300:
+                reasons.append("opposing lineup has high strikeout tendency")
+            elif team_strikeouts <= 1100:
+                reasons.append("opposing lineup does not strike out much")
 
         estimated_value = self._clamp(expected_strikeouts, 2.5, 11.5)
         display_line = self._nearest_half_line(estimated_value)
@@ -432,7 +461,6 @@ class BaseballPredictor:
     def _calculate_batter_total_bases_prop(self, payload):
         stats = payload.get("stats", {}) or {}
         current_matchup = stats.get("currentMatchup", {}) or {}
-        team_offense = stats.get("teamOffense", {}) or {}
 
         batter = current_matchup.get("batter", {}) or {}
         pitcher = current_matchup.get("pitcher", {}) or {}
@@ -450,17 +478,11 @@ class BaseballPredictor:
 
         batter_side = batter.get("batSide")
         pitcher_hand = pitcher.get("pitchHand")
+        pitcher_name = pitcher.get("fullName")
 
-        probable_home = stats.get("probablePitchers", {}).get("home", {}) or {}
-        probable_away = stats.get("probablePitchers", {}).get("away", {}) or {}
-
-        batting_team_offense = None
-        if pitcher.get("fullName") and probable_home.get("fullName") and pitcher.get("fullName") == probable_home.get("fullName"):
-            batting_team_offense = team_offense.get("away", {})
-        elif pitcher.get("fullName") and probable_away.get("fullName") and pitcher.get("fullName") == probable_away.get("fullName"):
-            batting_team_offense = team_offense.get("home", {})
-        else:
-            batting_team_offense = team_offense.get("home", {}) or team_offense.get("away", {})
+        batting_team_offense = self._get_batting_team_offense_for_current_matchup(
+            stats, pitcher_name
+        )
 
         team_avg = self._safe_float((batting_team_offense or {}).get("avg"))
         team_ops = self._safe_float((batting_team_offense or {}).get("ops"))
@@ -468,7 +490,6 @@ class BaseballPredictor:
         team_slg = self._safe_float((batting_team_offense or {}).get("slg"))
 
         reasons = []
-
         expected_total_bases = 1.0
 
         if batter_avg is not None:
@@ -616,16 +637,13 @@ class BaseballPredictor:
                 }
             )
 
-        if favorite == home_team:
-            score_component = 0.0
-            if home_runs is not None and away_runs is not None:
-                capped_diff = self._clamp(abs(score_diff), 0, 4)
-                score_component = capped_diff * min(0.08 + (inning_number * 0.03), 0.25)
+        score_component = 0.0
+        if home_runs is not None and away_runs is not None:
+            capped_diff = self._clamp(abs(score_diff), 0, 4)
+            score_component = capped_diff * min(0.08 + (inning_number * 0.03), 0.25)
 
-            estimated_margin = max(
-                0.5,
-                (home_prob - 50) / 18 + score_component
-            )
+        if favorite == home_team:
+            estimated_margin = max(0.5, (home_prob - 50) / 18 + score_component)
             spread_recommendation = (
                 f"{home_team} -1.5"
                 if estimated_margin >= 1.5
@@ -633,15 +651,7 @@ class BaseballPredictor:
             )
             spread_probability = max(55, min(80, home_prob))
         else:
-            score_component = 0.0
-            if home_runs is not None and away_runs is not None:
-                capped_diff = self._clamp(abs(score_diff), 0, 4)
-                score_component = capped_diff * min(0.08 + (inning_number * 0.03), 0.25)
-
-            estimated_margin = max(
-                0.5,
-                (home_prob - 50) / 18 + score_component
-            )
+            estimated_margin = max(0.5, (away_prob - 50) / 18 + score_component)
             spread_recommendation = (
                 f"{away_team} -1.5"
                 if estimated_margin >= 1.5
