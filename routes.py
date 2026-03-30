@@ -108,6 +108,11 @@ async def get_food():
     result = await backend.getFromDB('food')
     return jsonify(result)
 
+@app.route("/getBird")
+async def get_bird():
+    result = await backend.getFromDB('bird')
+    return jsonify(result)
+
 @app.route("/getShop")
 async def get_shop():
     result = await backend.getShop()
