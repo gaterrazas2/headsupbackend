@@ -1,4 +1,3 @@
-
 from pymongo.mongo_client import MongoClient
 from pymongo.server_api import ServerApi
 from bson import json_util
@@ -6,112 +5,170 @@ from pypdf import PdfReader
 from openai import OpenAI
 from dotenv import load_dotenv
 from baseball_predictor import BaseballPredictor
-import os, json
+import os
+import json
+
 
 class Backend:
     def __init__(self) -> None:
         load_dotenv(override=True)
-        # database setup
+
         self.uri = "mongodb+srv://gterra06:Gt391299%21%21@cluster0.o458oeb.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
-        self.client = MongoClient(self.uri, server_api=ServerApi('1'))
-        self.db = self.client['LittleBrotherBlog']
-        self.collection = self.db['Posts']
+        self.client = MongoClient(self.uri, server_api=ServerApi("1"))
+
+        self.db = self.client["LittleBrotherBlog"]
+        self.collection = self.db["Posts"]
+
         self.context = self.load_context()
         self.name = "Gabriel Terrazas"
         self.openai = OpenAI()
         self.predictor = BaseballPredictor()
 
     def sendToDB(self, formData):
-        # inserting form data in db 
         self.collection.insert_one(formData)
         print("Hey I posted your data fam")
-        return 
+        return
 
     async def getFromDB(self, category):
-        if category in {'comics', 'music', 'games', 'sports', 'events', 'food', 'bird'}:
-            query = {'category': category}
+        if category in {"comics", "music", "games", "sports", "events", "food", "bird"}:
+            query = {"category": category}
             documents = list(self.collection.find(query))
-            # Convert ObjectId to string for serialization
             serialized_documents = [json_util.dumps(doc) for doc in documents]
             return serialized_documents
-        else:
-            return []
-        
+
+        return []
+
     async def getShop(self):
-        query = {'category' : 'shop'}
+        query = {"category": "shop"}
         documents = list(self.collection.find(query))
-        # Convert ObjectId to string for serialization
         serialized_documents = [json_util.dumps(doc) for doc in documents]
         return serialized_documents
-    
-    # convert to set to remove duplicates
+
     async def getEmailCount(self):
-        documents = list(self.collection.find({'email': {'$exists': True}}))
+        documents = list(self.collection.find({"email": {"$exists": True}}))
+
         unique_emails = set()
+
         for doc in documents:
-            unique_emails.add(doc['email'])
-        count = len(unique_emails)
-        return count
-    
-    # convert to set to remove duplicates
+            unique_emails.add(doc["email"])
+
+        return len(unique_emails)
+
     async def getEmailList(self):
-        documents = list(self.collection.find({'email': {'$exists': True}}))
+        documents = list(self.collection.find({"email": {"$exists": True}}))
+
         unique_emails = set()
+
         for doc in documents:
-            unique_emails.add(doc['email'])
-        unique_emails = list(unique_emails)
-        return unique_emails
-    
-    # convert to set to remove duplicates
+            unique_emails.add(doc["email"])
+
+        return list(unique_emails)
+
     async def getCredentials(self):
-        document = list(self.collection.find({'username': {'$exists': True}}))
+        document = list(self.collection.find({"username": {"$exists": True}}))
         serialized_document = [json_util.dumps(document)]
         return serialized_document
 
     def load_context(self):
-        context = {'summary':'','linkedin':''}
+        context = {
+            "summary": "",
+            "linkedin": ""
+        }
 
-        # Build path relative to backend.py
         base_path = os.path.dirname(__file__)
+
         summary_path = os.path.join(base_path, "aboutme", "aboutme.txt")
 
-        with open(summary_path, "r", encoding="utf-8") as f:
-            summary = f.read()
-        context['summary'] = summary
+        try:
+            with open(summary_path, "r", encoding="utf-8") as f:
+                context["summary"] = f.read()
+        except Exception as e:
+            print(f"Could not load aboutme.txt: {e}")
 
         linkedin_path = os.path.join(base_path, "aboutme", "Profile.pdf")
-        reader = PdfReader(linkedin_path)
-        linkedin = ""
-        for page in reader.pages:
-            text = page.extract_text()
-            if text:
-                linkedin += text
 
-        context['linkedin'] = linkedin
+        try:
+            reader = PdfReader(linkedin_path)
+            linkedin = ""
+
+            for page in reader.pages:
+                text = page.extract_text()
+                if text:
+                    linkedin += text
+
+            context["linkedin"] = linkedin
+        except Exception as e:
+            print(f"Could not load Profile.pdf: {e}")
+
         return context
-    
-    async def askQuestion(self, question):
-        system_prompt = f"You are acting as {self.name}. You are answering questions on {self.name}'s website, \
-        particularly questions related to {self.name}'s career, background, skills, experience, and interests relating to the website. \
-        Your responsibility is to represent {self.name} for interactions on the website as faithfully as possible. \
-        You are given a summary of {self.name}'s background and LinkedIn profile which you can use to answer questions. \
-        Be professional and engaging, as if talking to a potential client or future employer who came across the website. \
-        If you don't know the answer, say so. Do not share {self.name}'s phone number under any circumstances. \
-        Don't make the responses super long, keep them short and don't respond to anything that wasn't asked. Also never use em dashes"
 
-        system_prompt += f"\n\n## Summary:\n{self.context['summary']}\n\n## LinkedIn Profile:\n{self.context['linkedin']}\n\n"
-        system_prompt += f"With this context, please chat with the user, always staying in character as {self.name}."
+    async def askQuestion(self, question, history=None):
+        if history is None:
+            history = []
+
+        system_prompt = f"""
+You are acting as {self.name}. You are answering questions on {self.name}'s website,
+particularly questions related to {self.name}'s career, background, skills, experience,
+and interests relating to the website.
+
+Your responsibility is to represent {self.name} for interactions on the website as faithfully as possible.
+
+You are given a summary of {self.name}'s background and LinkedIn profile which you can use to answer questions.
+
+Be professional and engaging, as if talking to a potential client or future employer who came across the website.
+
+Rules:
+- If you don't know the answer, say so.
+- Do not share {self.name}'s phone number under any circumstances.
+- Keep responses short.
+- Do not respond to anything that was not asked.
+- Never use em dashes.
+
+## Summary:
+{self.context["summary"]}
+
+## LinkedIn Profile:
+{self.context["linkedin"]}
+
+With this context, please chat with the user, always staying in character as {self.name}.
+"""
+
+        formatted_history = []
+
+        for msg in history[-10:]:
+            frontend_role = msg.get("role")
+            text = msg.get("text", "")
+
+            if not text:
+                continue
+
+            if frontend_role == "bot":
+                openai_role = "assistant"
+            else:
+                openai_role = "user"
+
+            formatted_history.append({
+                "role": openai_role,
+                "content": text
+            })
+
+        if not formatted_history or formatted_history[-1]["content"] != question:
+            formatted_history.append({
+                "role": "user",
+                "content": question
+            })
 
         response = self.openai.chat.completions.create(
             model="gpt-4.1-mini",
-            messages = [
-                {"role": "system", "content": system_prompt}] + [{"role": "user", "content": question}
+            messages=[
+                {"role": "system", "content": system_prompt},
+                *formatted_history
             ],
             max_tokens=150
         )
 
         return response.choices[0].message.content
-    
+
     async def getOdds(self, payload):
         probabilities = self.predictor.calculate_win_probability(payload)
         props = self.predictor.calculate_props(payload)
@@ -139,41 +196,41 @@ class Backend:
         )
 
         user_prompt = f"""
-    Here is the live game package:
+Here is the live game package:
 
-    {json.dumps(enriched_payload, indent=2)}
+{json.dumps(enriched_payload, indent=2)}
 
-    Return valid JSON in this exact shape:
-    {{
-        "summary": "2-3 sentence betting summary using the metrics provided",
-        "bestBet": "short recommendation",
-        "confidence": "Low, Medium, or High",
-        "biggestRisk": "short risk note",
-        "parlayAngle": "short parlay note",
-        "homeWinProbability": 0,
-        "awayWinProbability": 0,
-        "modelFavorite": "team name",
-        "props": [
-            {{
-                "type": "batter_hit",
-                "player": "player name",
-                "recommendation": "To record a hit",
-                "estimatedValue": 0,
-                "probability": 0,
-                "valueScore": 0,
-                "reason": "short reason"
-            }}
-        ]
-    }}
+Return valid JSON in this exact shape:
+{{
+    "summary": "2-3 sentence betting summary using the metrics provided",
+    "bestBet": "short recommendation",
+    "confidence": "Low, Medium, or High",
+    "biggestRisk": "short risk note",
+    "parlayAngle": "short parlay note",
+    "homeWinProbability": 0,
+    "awayWinProbability": 0,
+    "modelFavorite": "team name",
+    "props": [
+        {{
+            "type": "batter_hit",
+            "player": "player name",
+            "recommendation": "To record a hit",
+            "estimatedValue": 0,
+            "probability": 0,
+            "valueScore": 0,
+            "reason": "short reason"
+        }}
+    ]
+}}
 
-    Rules:
-    - homeWinProbability and awayWinProbability must match the supplied model probabilities exactly
-    - modelFavorite must match the supplied model favorite exactly
-    - props must match the supplied calculated props exactly
-    - do not invent extra fields
-    - if a prop does not have estimatedValue, it is okay for it to be absent
-    - if there are no props, return an empty array
-    """
+Rules:
+- homeWinProbability and awayWinProbability must match the supplied model probabilities exactly
+- modelFavorite must match the supplied model favorite exactly
+- props must match the supplied calculated props exactly
+- do not invent extra fields
+- if a prop does not have estimatedValue, it is okay for it to be absent
+- if there are no props, return an empty array
+"""
 
         response = self.openai.chat.completions.create(
             model="gpt-4.1-mini",

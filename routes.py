@@ -21,22 +21,28 @@ def print_request():
 
 @app.route("/askquestion", methods=['POST', 'OPTIONS'])
 async def ask_question():
-    # Handle preflight OPTIONS request
     if request.method == "OPTIONS":
         return '', 200
 
     try:
         data = request.get_json()
+
         if not data:
             return jsonify({"error": "No data provided"}), 400
-            
+
         question = data.get('message')
-        print(f"Received question: {question}")  # Check Heroku logs
-        
-        # Call your backend method
-        result = await backend.askQuestion(question)
-        
-        return jsonify({"response": result})
+        history = data.get('history', [])
+
+        if not question:
+            return jsonify({"error": "No message provided"}), 400
+
+        print(f"Received question: {question}")
+        print(f"History length: {len(history)}")
+
+        result = await backend.askQuestion(question, history)
+
+        return jsonify({"response": result}), 200
+
     except Exception as e:
         print(f"Backend Error: {e}")
         return jsonify({"error": str(e)}), 500
