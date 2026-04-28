@@ -38,6 +38,45 @@ class Backend:
 
         return []
 
+    def getBirdTitles(self):
+        query = {"category": "bird"}
+
+        documents = list(
+            self.collection.find(
+                query,
+                {
+                    "_id": 0,
+                    "title": 1
+                }
+            )
+        )
+
+        titles = []
+
+        for doc in documents:
+            if "title" in doc:
+                titles.append(doc["title"])
+
+        return titles
+
+    def getBirdByName(self, bird_name):
+        query = {
+            "category": "bird",
+            "title": bird_name
+        }
+
+        document = self.collection.find_one(
+            query,
+            {
+                "_id": 0
+            }
+        )
+
+        if not document:
+            return None
+
+        return document
+
     async def getShop(self):
         query = {"category": "shop"}
         documents = list(self.collection.find(query))
@@ -107,31 +146,31 @@ class Backend:
             history = []
 
         system_prompt = f"""
-You are acting as {self.name}. You are answering questions on {self.name}'s website,
-particularly questions related to {self.name}'s career, background, skills, experience,
-and interests relating to the website.
+            You are acting as {self.name}. You are answering questions on {self.name}'s website,
+            particularly questions related to {self.name}'s career, background, skills, experience,
+            and interests relating to the website.
 
-Your responsibility is to represent {self.name} for interactions on the website as faithfully as possible.
+            Your responsibility is to represent {self.name} for interactions on the website as faithfully as possible.
 
-You are given a summary of {self.name}'s background and LinkedIn profile which you can use to answer questions.
+            You are given a summary of {self.name}'s background and LinkedIn profile which you can use to answer questions.
 
-Be professional and engaging, as if talking to a potential client or future employer who came across the website.
+            Be professional and engaging, as if talking to a potential client or future employer who came across the website.
 
-Rules:
-- If you don't know the answer, say so.
-- Do not share {self.name}'s phone number under any circumstances.
-- Keep responses short.
-- Do not respond to anything that was not asked.
-- Never use em dashes.
+            Rules:
+            - If you don't know the answer, say so.
+            - Do not share {self.name}'s phone number under any circumstances.
+            - Keep responses short.
+            - Do not respond to anything that was not asked.
+            - Never use em dashes.
 
-## Summary:
-{self.context["summary"]}
+            ## Summary:
+            {self.context["summary"]}
 
-## LinkedIn Profile:
-{self.context["linkedin"]}
+            ## LinkedIn Profile:
+            {self.context["linkedin"]}
 
-With this context, please chat with the user, always staying in character as {self.name}.
-"""
+            With this context, please chat with the user, always staying in character as {self.name}.
+        """
 
         formatted_history = []
 
@@ -196,41 +235,41 @@ With this context, please chat with the user, always staying in character as {se
         )
 
         user_prompt = f"""
-Here is the live game package:
+            Here is the live game package:
 
-{json.dumps(enriched_payload, indent=2)}
+            {json.dumps(enriched_payload, indent=2)}
 
-Return valid JSON in this exact shape:
-{{
-    "summary": "2-3 sentence betting summary using the metrics provided",
-    "bestBet": "short recommendation",
-    "confidence": "Low, Medium, or High",
-    "biggestRisk": "short risk note",
-    "parlayAngle": "short parlay note",
-    "homeWinProbability": 0,
-    "awayWinProbability": 0,
-    "modelFavorite": "team name",
-    "props": [
-        {{
-            "type": "batter_hit",
-            "player": "player name",
-            "recommendation": "To record a hit",
-            "estimatedValue": 0,
-            "probability": 0,
-            "valueScore": 0,
-            "reason": "short reason"
-        }}
-    ]
-}}
+            Return valid JSON in this exact shape:
+            {{
+                "summary": "2-3 sentence betting summary using the metrics provided",
+                "bestBet": "short recommendation",
+                "confidence": "Low, Medium, or High",
+                "biggestRisk": "short risk note",
+                "parlayAngle": "short parlay note",
+                "homeWinProbability": 0,
+                "awayWinProbability": 0,
+                "modelFavorite": "team name",
+                "props": [
+                    {{
+                        "type": "batter_hit",
+                        "player": "player name",
+                        "recommendation": "To record a hit",
+                        "estimatedValue": 0,
+                        "probability": 0,
+                        "valueScore": 0,
+                        "reason": "short reason"
+                    }}
+                ]
+            }}
 
-Rules:
-- homeWinProbability and awayWinProbability must match the supplied model probabilities exactly
-- modelFavorite must match the supplied model favorite exactly
-- props must match the supplied calculated props exactly
-- do not invent extra fields
-- if a prop does not have estimatedValue, it is okay for it to be absent
-- if there are no props, return an empty array
-"""
+            Rules:
+            - homeWinProbability and awayWinProbability must match the supplied model probabilities exactly
+            - modelFavorite must match the supplied model favorite exactly
+            - props must match the supplied calculated props exactly
+            - do not invent extra fields
+            - if a prop does not have estimatedValue, it is okay for it to be absent
+            - if there are no props, return an empty array
+            """
 
         response = self.openai.chat.completions.create(
             model="gpt-4.1-mini",

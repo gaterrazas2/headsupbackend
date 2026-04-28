@@ -1,6 +1,7 @@
 import json
 from flask import Flask, jsonify, request
 from flask_cors import CORS
+from urllib.parse import unquote
 from backend import Backend
 
 
@@ -114,12 +115,41 @@ async def get_food():
     result = await backend.getFromDB('food')
     return jsonify(result)
 
-@app.route("/getBird")
-async def get_bird():
-    result = await backend.getFromDB('bird')
-    return jsonify(result)
-
 @app.route("/getShop")
 async def get_shop():
     result = await backend.getShop()
     return jsonify(result)
+
+# Get bird titles only (fast)
+@app.route("/getBirdTitles", methods=["GET"])
+def get_bird_titles():
+    try:
+        bird_titles = backend.getBirdTitles()
+
+        # Optional: keep list clean and consistent
+        bird_titles.sort()
+
+        return jsonify(bird_titles), 200
+
+    except Exception as e:
+        print(f"Error getting bird titles: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+# Get one bird by title (handles spaces safely)
+@app.route("/getBirds/<path:bird_name>", methods=["GET"])
+def get_bird_by_name(bird_name):
+    try:
+        # Decode URL encoding just to be safe
+        bird_name = unquote(bird_name)
+
+        bird = backend.getBirdByName(bird_name)
+
+        if not bird:
+            return jsonify({"error": "Bird not found"}), 404
+
+        return jsonify(bird), 200
+
+    except Exception as e:
+        print(f"Error getting bird by name: {e}")
+        return jsonify({"error": str(e)}), 500
