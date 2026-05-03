@@ -46,8 +46,8 @@ class Backend:
                 query,
                 {
                     "_id": 0,
-                    "title": 1
-                }
+                    "title": 1,
+                },
             )
         )
 
@@ -62,14 +62,14 @@ class Backend:
     def getBirdByName(self, bird_name):
         query = {
             "category": "bird",
-            "title": bird_name
+            "title": bird_name,
         }
 
         document = self.collection.find_one(
             query,
             {
-                "_id": 0
-            }
+                "_id": 0,
+            },
         )
 
         if not document:
@@ -111,7 +111,7 @@ class Backend:
     def load_context(self):
         context = {
             "summary": "",
-            "linkedin": ""
+            "linkedin": "",
         }
 
         base_path = os.path.dirname(__file__)
@@ -188,34 +188,97 @@ class Backend:
 
             formatted_history.append({
                 "role": openai_role,
-                "content": text
+                "content": text,
             })
 
         if not formatted_history or formatted_history[-1]["content"] != question:
             formatted_history.append({
                 "role": "user",
-                "content": question
+                "content": question,
             })
 
         response = self.openai.chat.completions.create(
             model="gpt-4.1-mini",
             messages=[
                 {"role": "system", "content": system_prompt},
-                *formatted_history
+                *formatted_history,
             ],
-            max_tokens=150
+            max_tokens=150,
         )
 
         return response.choices[0].message.content
+
+    def calculate_nrfi_probability(self, payload):
+        stats = payload.get("stats", {})
+        pitchers = stats.get("probablePitchers", {})
+        offense = stats.get("teamOffense", {})
+
+        home_pitcher = pitchers.get("home", {})
+        away_pitcher = pitchers.get("away", {})
+        home_offense = offense.get("home", {})
+        away_offense = offense.get("away", {})
+
+        def safe_float(value, fallback):
+            try:
+                if value is None or value == "N/A" or value == "":
+                    return fallback
+                return float(value)
+            except Exception:
+                return fallback
+
+        home_era = safe_float(home_pitcher.get("era"), 4.50)
+        away_era = safe_float(away_pitcher.get("era"), 4.50)
+        home_whip = safe_float(home_pitcher.get("whip"), 1.35)
+        away_whip = safe_float(away_pitcher.get("whip"), 1.35)
+        home_k9 = safe_float(home_pitcher.get("strikeoutsPer9Inn"), 8.50)
+        away_k9 = safe_float(away_pitcher.get("strikeoutsPer9Inn"), 8.50)
+        home_bb9 = safe_float(home_pitcher.get("walksPer9Inn"), 3.20)
+        away_bb9 = safe_float(away_pitcher.get("walksPer9Inn"), 3.20)
+
+        home_ops = safe_float(home_offense.get("ops"), 0.720)
+        away_ops = safe_float(away_offense.get("ops"), 0.720)
+        home_obp = safe_float(home_offense.get("obp"), 0.315)
+        away_obp = safe_float(away_offense.get("obp"), 0.315)
+        home_slg = safe_float(home_offense.get("slg"), 0.400)
+        away_slg = safe_float(away_offense.get("slg"), 0.400)
+
+        pitcher_score = 0
+
+        pitcher_score += (4.50 - home_era) * 2.5
+        pitcher_score += (4.50 - away_era) * 2.5
+        pitcher_score += (1.35 - home_whip) * 12
+        pitcher_score += (1.35 - away_whip) * 12
+        pitcher_score += (home_k9 - 8.50) * 0.6
+        pitcher_score += (away_k9 - 8.50) * 0.6
+        pitcher_score += (3.20 - home_bb9) * 1.2
+        pitcher_score += (3.20 - away_bb9) * 1.2
+
+        offense_score = 0
+
+        offense_score += (home_ops - 0.720) * 35
+        offense_score += (away_ops - 0.720) * 35
+        offense_score += (home_obp - 0.315) * 45
+        offense_score += (away_obp - 0.315) * 45
+        offense_score += (home_slg - 0.400) * 25
+        offense_score += (away_slg - 0.400) * 25
+
+        raw_nrfi = 52 + pitcher_score - offense_score
+
+        nrfi_probability = max(35, min(75, raw_nrfi))
+
+        return round(nrfi_probability)
 
     async def getOdds(self, payload):
         probabilities = self.predictor.calculate_win_probability(payload)
         props = self.predictor.calculate_props(payload)
 
+        nrfi_probability = self.calculate_nrfi_probability(payload)
+
         enriched_payload = {
             **payload,
             "modelProbabilities": probabilities,
             "props": props,
+            "nrfiProbability": nrfi_probability,
         }
 
         system_prompt = (
@@ -224,7 +287,8 @@ class Backend:
             "Use all provided metrics, including team records, team hitting metrics, "
             "probable pitchers, pitcher handedness, batter handedness, batter AVG, OPS, OBP, SLG, "
             "pitcher ERA, WHIP, K/9, BB/9, current score, inning, outs, count, runners on base, "
-            "the provided betting signals, the model win probabilities, and the calculated props. "
+            "the provided betting signals, the model win probabilities, the NRFI probability, "
+            "and the calculated props. "
             "Do not use or assume sportsbook lines. "
             "Do not include markdown fences. "
             "Do not guarantee outcomes. "
@@ -249,6 +313,7 @@ class Backend:
                 "homeWinProbability": 0,
                 "awayWinProbability": 0,
                 "modelFavorite": "team name",
+                "nrfiProbability": 0,
                 "props": [
                     {{
                         "type": "batter_hit",
@@ -265,6 +330,7 @@ class Backend:
             Rules:
             - homeWinProbability and awayWinProbability must match the supplied model probabilities exactly
             - modelFavorite must match the supplied model favorite exactly
+            - nrfiProbability must match the supplied NRFI probability exactly
             - props must match the supplied calculated props exactly
             - do not invent extra fields
             - if a prop does not have estimatedValue, it is okay for it to be absent
@@ -277,7 +343,7 @@ class Backend:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            max_tokens=500,
+            max_tokens=600,
             temperature=0.3,
         )
 
@@ -292,15 +358,19 @@ class Backend:
             "homeWinProbability": probabilities["homeWinProbability"],
             "awayWinProbability": probabilities["awayWinProbability"],
             "modelFavorite": probabilities["modelFavorite"],
+            "nrfiProbability": nrfi_probability,
             "props": props,
         }
 
         try:
             parsed = json.loads(content)
+
             parsed["homeWinProbability"] = probabilities["homeWinProbability"]
             parsed["awayWinProbability"] = probabilities["awayWinProbability"]
             parsed["modelFavorite"] = probabilities["modelFavorite"]
+            parsed["nrfiProbability"] = nrfi_probability
             parsed["props"] = props
+
             return parsed
         except Exception:
             return fallback
