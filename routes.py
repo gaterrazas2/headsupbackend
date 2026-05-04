@@ -126,9 +126,6 @@ def get_bird_titles():
     try:
         bird_titles = backend.getBirdTitles()
 
-        # Optional: keep list clean and consistent
-        bird_titles.sort()
-
         return jsonify(bird_titles), 200
 
     except Exception as e:
