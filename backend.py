@@ -42,21 +42,11 @@ class Backend:
         query = {"category": "bird"}
 
         documents = list(
-            self.collection.find(
-                query,
-                {
-                    "_id": 0,
-                    "title": 1,
-                },
-            )
+            self.collection.find(query, {"title": 1})  # keep _id
+            .sort("_id", -1) 
         )
 
-        titles = []
-
-        for doc in documents:
-            if "title" in doc:
-                titles.append(doc["title"])
-
+        titles = [doc["title"] for doc in documents]
         return titles
 
     def getBirdByName(self, bird_name):
