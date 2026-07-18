@@ -265,6 +265,18 @@ async def get_odds():
         print(f"Backend Error: {e}")
         return jsonify({"error": str(e)}), 500
 
+
+@app.get("/model-performance")
+@limiter.limit("10 per minute")
+def model_performance():
+    try:
+        response = jsonify(backend.get_model_performance())
+        response.headers["Cache-Control"] = "no-store"
+        return response
+    except Exception as error:
+        print(f"Model performance error: {error}")
+        return jsonify({"error": "Could not load model performance"}), 500
+
 # Get number of emails added
 @app.route("/getEmailCount")
 @login_required

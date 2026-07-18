@@ -8,6 +8,9 @@ from openai import OpenAI
 from dotenv import load_dotenv
 from baseball_predictor import BaseballPredictor
 from werkzeug.security import check_password_hash, generate_password_hash
+from datetime import datetime, timezone
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from urllib.request import urlopen
 import os
 import json
 import re
@@ -35,11 +38,171 @@ class Backend:
 
         self.db = self.client["LittleBrotherBlog"]
         self.collection = self.db["Posts"]
+        self.predictions = self.db["ModelPredictions"]
 
         self.context = self.load_context()
         self.name = "Gabriel Terrazas"
         self.openai = OpenAI()
         self.predictor = BaseballPredictor()
+
+    def record_model_prediction(self, payload, probabilities, nrfi_probability):
+        """Keep the first pregame forecast so later refreshes cannot rewrite history."""
+        if self.predictor._game_started(payload):
+            return
+
+        game_id = str(payload.get("gameId") or "").strip()
+        stats = payload.get("stats", {}) or {}
+        if not game_id or not game_id.isdigit():
+            return
+
+        self.predictions.update_one(
+            {"gameId": game_id, "phase": "pregame"},
+            {
+                "$setOnInsert": {
+                    "gameId": game_id,
+                    "phase": "pregame",
+                    "matchup": payload.get("matchup", ""),
+                    "homeTeam": stats.get("homeTeam", "Home Team"),
+                    "awayTeam": stats.get("awayTeam", "Away Team"),
+                    "homeWinProbability": probabilities["homeWinProbability"],
+                    "awayWinProbability": probabilities["awayWinProbability"],
+                    "modelFavorite": probabilities["modelFavorite"],
+                    "nrfiProbability": nrfi_probability,
+                    "createdAt": datetime.now(timezone.utc),
+                    "settled": False,
+                }
+            },
+            upsert=True,
+        )
+
+    def _official_game_result(self, game_id):
+        url = f"https://statsapi.mlb.com/api/v1.1/game/{game_id}/feed/live"
+        with urlopen(url, timeout=8) as response:
+            game = json.loads(response.read().decode("utf-8"))
+
+        status = str(game.get("gameData", {}).get("status", {}).get("detailedState", ""))
+        if "final" not in status.lower() and "game over" not in status.lower():
+            return None
+
+        teams = game.get("liveData", {}).get("linescore", {}).get("teams", {})
+        home_runs = int(teams.get("home", {}).get("runs", 0))
+        away_runs = int(teams.get("away", {}).get("runs", 0))
+        if home_runs == away_runs:
+            return None
+
+        first_inning = next(
+            (
+                inning
+                for inning in game.get("liveData", {}).get("linescore", {}).get("innings", [])
+                if inning.get("num") == 1
+            ),
+            {},
+        )
+        first_inning_runs = int(first_inning.get("home", {}).get("runs", 0)) + int(
+            first_inning.get("away", {}).get("runs", 0)
+        )
+
+        return {
+            "homeRuns": home_runs,
+            "awayRuns": away_runs,
+            "homeWon": home_runs > away_runs,
+            "nrfiWon": first_inning_runs == 0,
+        }
+
+    def settle_pending_predictions(self, limit=20):
+        pending = self.predictions.find(
+            {"phase": "pregame", "settled": False},
+            {"gameId": 1},
+        ).sort("createdAt", 1).limit(limit)
+
+        pending = list(pending)
+        with ThreadPoolExecutor(max_workers=6) as executor:
+            requests = {
+                executor.submit(self._official_game_result, prediction["gameId"]): prediction
+                for prediction in pending
+            }
+            results = []
+            for future in as_completed(requests):
+                prediction = requests[future]
+                try:
+                    results.append((prediction, future.result()))
+                except Exception as error:
+                    print(f"Could not settle MLB game {prediction.get('gameId')}: {error}")
+
+        for prediction, result in results:
+            try:
+                if result:
+                    self.predictions.update_one(
+                        {"_id": prediction["_id"], "settled": False},
+                        {
+                            "$set": {
+                                **result,
+                                "settled": True,
+                                "settledAt": datetime.now(timezone.utc),
+                            }
+                        },
+                    )
+            except Exception as error:
+                print(f"Could not save MLB result {prediction.get('gameId')}: {error}")
+
+    def get_model_performance(self):
+        self.settle_pending_predictions()
+        completed = list(self.predictions.find({"phase": "pregame", "settled": True}))
+        pending_count = self.predictions.count_documents({"phase": "pregame", "settled": False})
+
+        if not completed:
+            return {
+                "sampleSize": 0,
+                "pending": pending_count,
+                "accuracy": None,
+                "brierScore": None,
+                "buckets": [],
+            }
+
+        correct = 0
+        squared_errors = []
+        nrfi_correct = 0
+        nrfi_squared_errors = []
+        buckets = {}
+        for prediction in completed:
+            home_probability = float(prediction.get("homeWinProbability", 50)) / 100
+            home_result = 1 if prediction.get("homeWon") else 0
+            squared_errors.append((home_probability - home_result) ** 2)
+            nrfi_probability = float(prediction.get("nrfiProbability", 50)) / 100
+            nrfi_result = 1 if prediction.get("nrfiWon") else 0
+            nrfi_squared_errors.append((nrfi_probability - nrfi_result) ** 2)
+            nrfi_correct += int((nrfi_probability >= 0.5) == bool(nrfi_result))
+            favorite_won = (
+                prediction.get("modelFavorite") == prediction.get("homeTeam")
+            ) == bool(prediction.get("homeWon"))
+            correct += int(favorite_won)
+
+            favorite_probability = max(home_probability, 1 - home_probability)
+            lower = min(90, int(favorite_probability * 100 // 10) * 10)
+            bucket = buckets.setdefault(lower, {"predictions": 0, "wins": 0, "probabilityTotal": 0})
+            bucket["predictions"] += 1
+            bucket["wins"] += int(favorite_won)
+            bucket["probabilityTotal"] += favorite_probability
+
+        calibration = []
+        for lower, bucket in sorted(buckets.items()):
+            count = bucket["predictions"]
+            calibration.append({
+                "range": f"{lower}-{min(lower + 9, 99)}%",
+                "predictions": count,
+                "averageConfidence": round(bucket["probabilityTotal"] / count * 100, 1),
+                "winRate": round(bucket["wins"] / count * 100, 1),
+            })
+
+        return {
+            "sampleSize": len(completed),
+            "pending": pending_count,
+            "accuracy": round(correct / len(completed) * 100, 1),
+            "brierScore": round(sum(squared_errors) / len(squared_errors), 3),
+            "nrfiAccuracy": round(nrfi_correct / len(completed) * 100, 1),
+            "nrfiBrierScore": round(sum(nrfi_squared_errors) / len(nrfi_squared_errors), 3),
+            "buckets": calibration,
+        }
 
     def sendToDB(self, formData):
         self.collection.insert_one(formData)
@@ -493,6 +656,10 @@ class Backend:
         props = self.predictor.calculate_props(payload)
 
         nrfi_probability = self.calculate_nrfi_probability(payload)
+        try:
+            self.record_model_prediction(payload, probabilities, nrfi_probability)
+        except Exception as error:
+            print(f"Could not record model prediction: {error}")
 
         enriched_payload = {
             **payload,
