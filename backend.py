@@ -23,7 +23,8 @@ class Backend:
         "comics", "music", "games", "sports", "events", "food",
         "bird", "shop",
     }
-    GUEST_EDITABLE_FIELDS = {"name", "title", "image", "link", "blocks"}
+    GUEST_SUBMISSION_FIELDS = {"name", "title", "image", "link", "blocks"}
+    GUEST_EDITABLE_FIELDS = GUEST_SUBMISSION_FIELDS | {"authorBlurb"}
     def __init__(self) -> None:
         load_dotenv(override=True)
 
@@ -110,11 +111,16 @@ class Backend:
             return None
         return self.get_editable_post(post_id)
 
-    def _validate_guest_submission(self, data):
+    def _validate_guest_submission(self, data, include_author_blurb=False):
+        allowed_fields = (
+            self.GUEST_EDITABLE_FIELDS
+            if include_author_blurb
+            else self.GUEST_SUBMISSION_FIELDS
+        )
         safe = {
             key: value
             for key, value in (data or {}).items()
-            if key in self.GUEST_EDITABLE_FIELDS
+            if key in allowed_fields
         }
         for field in ("name", "title", "image"):
             if not isinstance(safe.get(field), str) or not safe[field].strip():
@@ -141,6 +147,13 @@ class Backend:
         safe["title"] = safe["title"].strip()
         safe["link"] = str(safe.get("link", "")).strip()
         safe["blocks"] = clean_blocks
+        if include_author_blurb:
+            author_blurb = safe.get("authorBlurb", "")
+            if not isinstance(author_blurb, str):
+                raise ValueError("Author blurb must be text")
+            if len(author_blurb) > 2000:
+                raise ValueError("Author blurb must be 2,000 characters or less")
+            safe["authorBlurb"] = author_blurb.strip()
         return safe
 
     def create_guest_submission(self, data):
@@ -163,7 +176,7 @@ class Backend:
             object_id = ObjectId(post_id)
         except (InvalidId, TypeError):
             return None
-        safe = self._validate_guest_submission(changes)
+        safe = self._validate_guest_submission(changes, include_author_blurb=True)
         result = self.collection.update_one(
             {"_id": object_id, "category": "guest", "submissionStatus": "pending"},
             {"$set": safe},
