@@ -18,11 +18,13 @@ class Backend:
         "title", "category", "image", "backImage", "stockImage",
         "takenPhoto", "audioFile", "description", "link", "price",
         "status", "blocks", "ingredients", "steps", "isRecorded",
+        "name", "authorBlurb",
     }
     POST_CATEGORIES = {
         "comics", "music", "games", "sports", "events", "food",
         "bird", "shop",
     }
+    EDITABLE_CATEGORIES = POST_CATEGORIES | {"guest"}
     GUEST_SUBMISSION_FIELDS = {"name", "title", "image", "link", "blocks"}
     GUEST_EDITABLE_FIELDS = GUEST_SUBMISSION_FIELDS | {"authorBlurb"}
     def __init__(self) -> None:
@@ -52,7 +54,10 @@ class Backend:
         documents = self.collection.find(
             {
                 "title": {"$regex": re.escape(query), "$options": "i"},
-                "category": {"$in": list(self.POST_CATEGORIES)},
+                "$or": [
+                    {"category": {"$in": list(self.POST_CATEGORIES)}},
+                    {"category": "guest", "submissionStatus": "published"},
+                ],
             },
             {"title": 1, "category": 1},
         ).limit(min(max(int(limit), 1), 20))
@@ -72,9 +77,13 @@ class Backend:
         except (InvalidId, TypeError):
             return None
 
-        document = self.collection.find_one(
-            {"_id": object_id, "category": {"$in": list(self.POST_CATEGORIES)}}
-        )
+        document = self.collection.find_one({
+            "_id": object_id,
+            "$or": [
+                {"category": {"$in": list(self.POST_CATEGORIES)}},
+                {"category": "guest", "submissionStatus": "published"},
+            ],
+        })
         if not document:
             return None
 
@@ -100,11 +109,17 @@ class Backend:
         category = safe_changes.get("category")
         if not isinstance(title, str) or not title.strip():
             raise ValueError("A title is required")
-        if category not in self.POST_CATEGORIES:
+        if category not in self.EDITABLE_CATEGORIES:
             raise ValueError("Invalid post category")
 
         result = self.collection.update_one(
-            {"_id": object_id, "category": {"$in": list(self.POST_CATEGORIES)}},
+            {
+                "_id": object_id,
+                "$or": [
+                    {"category": {"$in": list(self.POST_CATEGORIES)}},
+                    {"category": "guest", "submissionStatus": "published"},
+                ],
+            },
             {"$set": safe_changes},
         )
         if result.matched_count == 0:
@@ -117,9 +132,13 @@ class Backend:
         except (InvalidId, TypeError):
             return False
 
-        result = self.collection.delete_one(
-            {"_id": object_id, "category": {"$in": list(self.POST_CATEGORIES)}}
-        )
+        result = self.collection.delete_one({
+            "_id": object_id,
+            "$or": [
+                {"category": {"$in": list(self.POST_CATEGORIES)}},
+                {"category": "guest", "submissionStatus": "published"},
+            ],
+        })
         return result.deleted_count == 1
 
     def _validate_guest_submission(self, data, include_author_blurb=False):
