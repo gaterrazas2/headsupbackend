@@ -1,6 +1,8 @@
 from pymongo.mongo_client import MongoClient
 from pymongo.server_api import ServerApi
 from bson import json_util
+from bson.objectid import ObjectId
+from bson.errors import InvalidId
 from pypdf import PdfReader
 from openai import OpenAI
 from dotenv import load_dotenv
@@ -8,9 +10,19 @@ from baseball_predictor import BaseballPredictor
 from werkzeug.security import check_password_hash, generate_password_hash
 import os
 import json
+import re
 
 
 class Backend:
+    EDITABLE_POST_FIELDS = {
+        "title", "category", "image", "backImage", "stockImage",
+        "takenPhoto", "audioFile", "description", "link", "price",
+        "status", "blocks", "ingredients", "steps", "isRecorded",
+    }
+    POST_CATEGORIES = {
+        "comics", "music", "games", "sports", "events", "food",
+        "bird", "shop",
+    }
     def __init__(self) -> None:
         load_dotenv(override=True)
 
@@ -29,6 +41,73 @@ class Backend:
         self.collection.insert_one(formData)
         print("Hey I posted your data fam")
         return
+
+    def search_posts(self, title_query, limit=10):
+        query = str(title_query or "").strip()
+        if not query:
+            return []
+
+        documents = self.collection.find(
+            {
+                "title": {"$regex": re.escape(query), "$options": "i"},
+                "category": {"$in": list(self.POST_CATEGORIES)},
+            },
+            {"title": 1, "category": 1},
+        ).limit(min(max(int(limit), 1), 20))
+
+        return [
+            {
+                "id": str(document["_id"]),
+                "title": document.get("title", "Untitled"),
+                "category": document.get("category", ""),
+            }
+            for document in documents
+        ]
+
+    def get_editable_post(self, post_id):
+        try:
+            object_id = ObjectId(post_id)
+        except (InvalidId, TypeError):
+            return None
+
+        document = self.collection.find_one(
+            {"_id": object_id, "category": {"$in": list(self.POST_CATEGORIES)}}
+        )
+        if not document:
+            return None
+
+        editable = {
+            key: value
+            for key, value in document.items()
+            if key in self.EDITABLE_POST_FIELDS
+        }
+        return {"id": str(document["_id"]), **editable}
+
+    def update_post(self, post_id, changes):
+        try:
+            object_id = ObjectId(post_id)
+        except (InvalidId, TypeError):
+            return None
+
+        safe_changes = {
+            key: value
+            for key, value in (changes or {}).items()
+            if key in self.EDITABLE_POST_FIELDS
+        }
+        title = safe_changes.get("title")
+        category = safe_changes.get("category")
+        if not isinstance(title, str) or not title.strip():
+            raise ValueError("A title is required")
+        if category not in self.POST_CATEGORIES:
+            raise ValueError("Invalid post category")
+
+        result = self.collection.update_one(
+            {"_id": object_id, "category": {"$in": list(self.POST_CATEGORIES)}},
+            {"$set": safe_changes},
+        )
+        if result.matched_count == 0:
+            return None
+        return self.get_editable_post(post_id)
 
     async def getFromDB(self, category):
         if category in {"comics", "music", "games", "sports", "events", "food", "bird"}:

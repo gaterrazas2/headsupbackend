@@ -108,6 +108,40 @@ def auth_status():
     response.headers["Cache-Control"] = "no-store"
     return response
 
+
+@app.get("/admin/posts/search")
+@login_required
+def search_admin_posts():
+    query = request.args.get("q", "")
+    if len(query) > 100:
+        return jsonify({"error": "Search is too long"}), 400
+    return jsonify(backend.search_posts(query))
+
+
+@app.get("/admin/posts/<post_id>")
+@login_required
+def get_admin_post(post_id):
+    post = backend.get_editable_post(post_id)
+    if not post:
+        return jsonify({"error": "Post not found"}), 404
+    return jsonify(post)
+
+
+@app.put("/admin/posts/<post_id>")
+@login_required
+def update_admin_post(post_id):
+    csrf_error = require_csrf()
+    if csrf_error:
+        return csrf_error
+
+    try:
+        post = backend.update_post(post_id, request.get_json(silent=True) or {})
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+    if not post:
+        return jsonify({"error": "Post not found"}), 404
+    return jsonify({"post": post, "message": "Post updated"})
+
 # Send to DB
 @app.route("/post", methods=['POST'])
 @login_required
