@@ -5,6 +5,7 @@ from pypdf import PdfReader
 from openai import OpenAI
 from dotenv import load_dotenv
 from baseball_predictor import BaseballPredictor
+from werkzeug.security import check_password_hash, generate_password_hash
 import os
 import json
 
@@ -13,7 +14,7 @@ class Backend:
     def __init__(self) -> None:
         load_dotenv(override=True)
 
-        self.uri = "mongodb+srv://gterra06:Gt391299%21%21@cluster0.o458oeb.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
+        self.uri = os.environ["MONGODB_URI"]
         self.client = MongoClient(self.uri, server_api=ServerApi("1"))
 
         self.db = self.client["LittleBrotherBlog"]
@@ -93,10 +94,33 @@ class Backend:
 
         return list(unique_emails)
 
-    async def getCredentials(self):
-        document = list(self.collection.find({"username": {"$exists": True}}))
-        serialized_document = [json_util.dumps(document)]
-        return serialized_document
+    def authenticate_admin(self, username, password):
+        """Verify an admin without ever returning credentials to the browser.
+
+        Existing plaintext records are upgraded to a password hash after their
+        next successful login. This keeps the current username/password working
+        while removing the plaintext password from MongoDB.
+        """
+        document = self.collection.find_one({"username": username})
+        if not document:
+            return False
+
+        password_hash = document.get("password_hash")
+        if password_hash:
+            return check_password_hash(password_hash, password)
+
+        legacy_password = document.get("password")
+        if not legacy_password or legacy_password != password:
+            return False
+
+        self.collection.update_one(
+            {"_id": document["_id"]},
+            {
+                "$set": {"password_hash": generate_password_hash(password)},
+                "$unset": {"password": ""},
+            },
+        )
+        return True
 
     def load_context(self):
         context = {
