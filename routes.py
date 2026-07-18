@@ -22,6 +22,7 @@ app.config.update(
     # The frontend and backend are hosted on different sites.
     SESSION_COOKIE_SAMESITE="Lax" if is_development else "None",
     PERMANENT_SESSION_LIFETIME=timedelta(hours=2),
+    MAX_CONTENT_LENGTH=16 * 1024 * 1024,
 )
 
 allowed_origins = [
@@ -141,6 +142,57 @@ def update_admin_post(post_id):
     if not post:
         return jsonify({"error": "Post not found"}), 404
     return jsonify({"post": post, "message": "Post updated"})
+
+
+@app.post("/guest-submissions")
+@limiter.limit("5 per hour")
+def create_guest_submission():
+    try:
+        submission_id = backend.create_guest_submission(request.get_json(silent=True) or {})
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+    return jsonify({"id": submission_id, "message": "Submitted for review"}), 201
+
+
+@app.get("/guest-posts")
+def get_guest_posts():
+    return jsonify(backend.get_published_guest_posts())
+
+
+@app.get("/admin/guest-submissions")
+@login_required
+def get_guest_submissions():
+    return jsonify(backend.list_pending_guest_submissions())
+
+
+@app.put("/admin/guest-submissions/<post_id>")
+@login_required
+def update_guest_submission(post_id):
+    csrf_error = require_csrf()
+    if csrf_error:
+        return csrf_error
+    try:
+        submission = backend.update_guest_submission(post_id, request.get_json(silent=True) or {})
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+    if not submission:
+        return jsonify({"error": "Submission not found"}), 404
+    return jsonify({"submission": submission, "message": "Draft saved"})
+
+
+@app.post("/admin/guest-submissions/<post_id>/publish")
+@login_required
+def publish_guest_submission(post_id):
+    csrf_error = require_csrf()
+    if csrf_error:
+        return csrf_error
+    try:
+        submission = backend.publish_guest_submission(post_id, request.get_json(silent=True) or {})
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+    if not submission:
+        return jsonify({"error": "Submission not found"}), 404
+    return jsonify({"post": submission, "message": "Guest post published"})
 
 # Send to DB
 @app.route("/post", methods=['POST'])

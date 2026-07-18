@@ -23,6 +23,7 @@ class Backend:
         "comics", "music", "games", "sports", "events", "food",
         "bird", "shop",
     }
+    GUEST_EDITABLE_FIELDS = {"name", "title", "image", "link", "blocks"}
     def __init__(self) -> None:
         load_dotenv(override=True)
 
@@ -108,6 +109,89 @@ class Backend:
         if result.matched_count == 0:
             return None
         return self.get_editable_post(post_id)
+
+    def _validate_guest_submission(self, data):
+        safe = {
+            key: value
+            for key, value in (data or {}).items()
+            if key in self.GUEST_EDITABLE_FIELDS
+        }
+        for field in ("name", "title", "image"):
+            if not isinstance(safe.get(field), str) or not safe[field].strip():
+                raise ValueError(f"{field.capitalize()} is required")
+
+        if not safe["image"].startswith("data:image/"):
+            raise ValueError("Main image must be an uploaded image")
+
+        blocks = safe.get("blocks")
+        if not isinstance(blocks, list) or not blocks:
+            raise ValueError("At least one content block is required")
+        clean_blocks = []
+        for block in blocks:
+            if not isinstance(block, dict) or block.get("type") not in {"text", "image"}:
+                raise ValueError("Invalid content block")
+            value = block.get("value")
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError("Every content block is required")
+            if block["type"] == "image" and not value.startswith("data:image/"):
+                raise ValueError("Image blocks must use uploaded images")
+            clean_blocks.append({"type": block["type"], "value": value})
+
+        safe["name"] = safe["name"].strip()
+        safe["title"] = safe["title"].strip()
+        safe["link"] = str(safe.get("link", "")).strip()
+        safe["blocks"] = clean_blocks
+        return safe
+
+    def create_guest_submission(self, data):
+        submission = self._validate_guest_submission(data)
+        submission.update({"category": "guest", "submissionStatus": "pending"})
+        result = self.collection.insert_one(submission)
+        return str(result.inserted_id)
+
+    def list_pending_guest_submissions(self):
+        documents = self.collection.find(
+            {"category": "guest", "submissionStatus": "pending"}
+        ).sort("_id", -1)
+        return [
+            {"id": str(document.pop("_id")), **document}
+            for document in documents
+        ]
+
+    def update_guest_submission(self, post_id, changes):
+        try:
+            object_id = ObjectId(post_id)
+        except (InvalidId, TypeError):
+            return None
+        safe = self._validate_guest_submission(changes)
+        result = self.collection.update_one(
+            {"_id": object_id, "category": "guest", "submissionStatus": "pending"},
+            {"$set": safe},
+        )
+        if result.matched_count == 0:
+            return None
+        return {"id": post_id, **safe, "category": "guest", "submissionStatus": "pending"}
+
+    def publish_guest_submission(self, post_id, changes):
+        updated = self.update_guest_submission(post_id, changes)
+        if not updated:
+            return None
+        self.collection.update_one(
+            {"_id": ObjectId(post_id), "category": "guest", "submissionStatus": "pending"},
+            {"$set": {"submissionStatus": "published"}},
+        )
+        updated["submissionStatus"] = "published"
+        return updated
+
+    def get_published_guest_posts(self):
+        documents = self.collection.find(
+            {"category": "guest", "submissionStatus": "published"},
+            {"submissionStatus": 0},
+        ).sort("_id", -1)
+        return [
+            {"id": str(document.pop("_id")), **document}
+            for document in documents
+        ]
 
     async def getFromDB(self, category):
         if category in {"comics", "music", "games", "sports", "events", "food", "bird"}:
