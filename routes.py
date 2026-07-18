@@ -144,6 +144,17 @@ def update_admin_post(post_id):
     return jsonify({"post": post, "message": "Post updated"})
 
 
+@app.delete("/admin/posts/<post_id>")
+@login_required
+def delete_admin_post(post_id):
+    csrf_error = require_csrf()
+    if csrf_error:
+        return csrf_error
+    if not backend.delete_post(post_id):
+        return jsonify({"error": "Post not found"}), 404
+    return jsonify({"message": "Post permanently deleted"})
+
+
 @app.post("/guest-submissions")
 @limiter.limit("5 per hour")
 def create_guest_submission():

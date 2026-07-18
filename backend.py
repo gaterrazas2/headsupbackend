@@ -111,6 +111,17 @@ class Backend:
             return None
         return self.get_editable_post(post_id)
 
+    def delete_post(self, post_id):
+        try:
+            object_id = ObjectId(post_id)
+        except (InvalidId, TypeError):
+            return False
+
+        result = self.collection.delete_one(
+            {"_id": object_id, "category": {"$in": list(self.POST_CATEGORIES)}}
+        )
+        return result.deleted_count == 1
+
     def _validate_guest_submission(self, data, include_author_blurb=False):
         allowed_fields = (
             self.GUEST_EDITABLE_FIELDS
