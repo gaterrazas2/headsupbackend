@@ -238,12 +238,50 @@ class NFLManager:
             "rankingsSeason": 2025,
         }
 
-    def player_detail(self, athlete_id, opponent_abbreviation=None):
+    def _team_sacks_allowed(self, team_abbreviation):
+        if not team_abbreviation:
+            return "Not available"
+        data = self._json(f"{self.ESPN_SITE}/teams/{team_abbreviation.lower()}/statistics?season=2025")
+        for category in data.get("results", {}).get("stats", {}).get("categories", []):
+            if category.get("name") == "passing":
+                stat = next((item for item in category.get("stats", []) if item.get("name") == "sacks"), None)
+                if stat:
+                    return stat.get("displayValue") or stat.get("value") or "Not available"
+        return "Not available"
+
+    def player_detail(self, athlete_id, opponent_abbreviation=None, position=None, team_abbreviation=None):
         data = self._json(f"{self.ESPN_WEB}/athletes/{athlete_id}/stats?region=us&lang=en&contentorigin=espn")
         categories = []
         projected = {}
         opponent = self._metric_for(opponent_abbreviation) if opponent_abbreviation else {}
+        position = (position or "").upper()
+        offensive_line = {"C", "G", "LG", "RG", "T", "LT", "RT", "OL"}
+        defensive_line = {"DE", "LDE", "RDE", "LE", "RE", "DT", "NT", "DL"}
+        allowed_categories = {
+            "QB": {"passing", "rushing"},
+            "RB": {"rushing", "receiving"},
+            "FB": {"rushing", "receiving"},
+            "WR": {"receiving", "rushing"},
+            "TE": {"receiving"},
+            "K": {"kicking"},
+            "PK": {"kicking"},
+            "P": {"punting"},
+        }
+        if position in offensive_line:
+            categories.append({
+                "name": "Pass Protection",
+                "season": 2025,
+                "stats": [
+                    {"name": "Team Sacks Allowed", "value": self._team_sacks_allowed(team_abbreviation)},
+                    {"name": "Individual Sacks Allowed", "value": "Not published by ESPN"},
+                ],
+                "note": "ESPN does not publish individual offensive-line sacks allowed; the team total is shown for context.",
+            })
+        allowed = {"defensive"} if position in defensive_line or position in {"LB", "ILB", "OLB", "MLB", "CB", "DB", "S", "FS", "SS"} else allowed_categories.get(position, set())
         for category in data.get("categories", []):
+            category_name = (category.get("name") or category.get("displayName") or "").lower()
+            if category_name not in allowed:
+                continue
             rows = category.get("statistics", [])
             if not rows:
                 continue
@@ -251,19 +289,25 @@ class NFLManager:
             stats = dict(zip(category.get("names", []), row.get("stats", [])))
             useful = [
                 {"name": display, "value": value}
-                for display, value in zip(category.get("displayNames", []), row.get("stats", []))
+                for name, display, value in zip(category.get("names", []), category.get("displayNames", []), row.get("stats", []))
                 if value not in ("0", "0.0", "--", None)
+                and not (position in defensive_line and name not in {"gamesPlayed", "totalTackles", "soloTackles", "assistTackles", "sacks", "stuffs", "forcedFumbles", "fumbleRecoveries"})
             ]
+            if position in defensive_line:
+                for stat in useful:
+                    if stat["name"].lower() == "stuffs":
+                        stat["name"] = "Tackles for Loss (ESPN Stuffs)"
+                useful.append({"name": "Pressures", "value": "Not published by ESPN"})
             categories.append({"name": category.get("displayName"), "season": row.get("season", {}).get("year"), "stats": useful[:14]})
             games = self._number(stats.get("gamesPlayed")) or 1
-            position = row.get("position")
-            if position == "QB" and stats.get("passingYards"):
+            row_position = position or row.get("position")
+            if row_position == "QB" and stats.get("passingYards"):
                 baseline = self._number(stats["passingYards"]) / games
                 projected["passingYards"] = round(baseline * opponent.get("defensePassYpg", 220) / 220, 1)
-            if position == "RB" and stats.get("rushingYards"):
+            if row_position == "RB" and stats.get("rushingYards"):
                 baseline = self._number(stats["rushingYards"]) / games
                 projected["rushingYards"] = round(baseline * opponent.get("defenseRushYpg", 110) / 110, 1)
-            if position in ("WR", "TE", "RB") and stats.get("receivingYards"):
+            if row_position in ("WR", "TE", "RB") and stats.get("receivingYards"):
                 baseline = self._number(stats["receivingYards"]) / games
                 projected["receivingYards"] = round(baseline * opponent.get("defensePassYpg", 220) / 220, 1)
 

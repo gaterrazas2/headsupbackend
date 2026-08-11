@@ -369,7 +369,12 @@ def nfl_player_detail(athlete_id):
     if not athlete_id.isdigit():
         return jsonify({"error": "Invalid NFL player"}), 400
     try:
-        return jsonify(backend.nfl.player_detail(athlete_id, request.args.get("opponent")))
+        return jsonify(backend.nfl.player_detail(
+            athlete_id,
+            request.args.get("opponent"),
+            request.args.get("position"),
+            request.args.get("team"),
+        ))
     except Exception as error:
         print(f"NFL player error: {error}")
         return jsonify({"error": "Could not load NFL player details"}), 502
