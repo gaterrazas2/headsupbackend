@@ -253,16 +253,19 @@ class NFLManager:
             "rankingsSeason": 2025,
         }
 
-    def _team_sacks_allowed(self, team_abbreviation):
+    def _team_line_stats(self, team_abbreviation):
+        result = {"sacksAllowed": "Not available", "rushingYards": "Not available", "yardsPerRush": "Not available"}
         if not team_abbreviation:
-            return "Not available"
+            return result
         data = self._json(f"{self.ESPN_SITE}/teams/{team_abbreviation.lower()}/statistics?season=2025")
         for category in data.get("results", {}).get("stats", {}).get("categories", []):
+            stats = {item.get("name"): item.get("displayValue") or item.get("value") for item in category.get("stats", [])}
             if category.get("name") == "passing":
-                stat = next((item for item in category.get("stats", []) if item.get("name") == "sacks"), None)
-                if stat:
-                    return stat.get("displayValue") or stat.get("value") or "Not available"
-        return "Not available"
+                result["sacksAllowed"] = stats.get("sacks") or result["sacksAllowed"]
+            if category.get("name") == "rushing":
+                result["rushingYards"] = stats.get("rushingYards") or result["rushingYards"]
+                result["yardsPerRush"] = stats.get("yardsPerRushAttempt") or result["yardsPerRush"]
+        return result
 
     def player_detail(self, athlete_id, opponent_abbreviation=None, position=None, team_abbreviation=None):
         data = self._json(f"{self.ESPN_WEB}/athletes/{athlete_id}/stats?region=us&lang=en&contentorigin=espn")
@@ -270,6 +273,7 @@ class NFLManager:
         projected = {}
         opponent = self._metric_for(opponent_abbreviation) if opponent_abbreviation else {}
         position = (position or "").upper()
+        offensive_line = position in {"C", "G", "LG", "RG", "T", "LT", "RT", "OL"}
         defensive_line = position in {"DE", "LDE", "RDE", "LE", "RE", "DT", "LDT", "RDT", "NT", "DL"} or position.endswith(("DE", "DT"))
         defensive_back = position in {"CB", "LCB", "RCB", "NB", "DB", "S", "FS", "SS"} or position.endswith(("CB", "S"))
         linebacker = position in {"LB", "ILB", "OLB", "MLB", "LILB", "RILB", "WLB", "SLB"} or position.endswith("LB")
@@ -283,13 +287,30 @@ class NFLManager:
             "PK": {"kicking"},
             "P": {"punting"},
         }
-        if position == "C":
+        if offensive_line:
+            line_stats = self._team_line_stats(team_abbreviation)
+            games_played = "Not available"
+            seasons = []
+            for category in data.get("categories", []):
+                rows = category.get("statistics", [])
+                if not rows:
+                    continue
+                row = max(rows, key=lambda item: item.get("season", {}).get("year", 0))
+                seasons.append(row.get("season", {}).get("year"))
+                stats = dict(zip(category.get("names", []), row.get("stats", [])))
+                if stats.get("gamesPlayed") not in (None, "--"):
+                    games_played = stats["gamesPlayed"]
+            offensive_line_stats = [
+                {"name": "Games Played", "value": games_played},
+                {"name": "Team Rushing Yards", "value": line_stats["rushingYards"]},
+                {"name": "Team Yards Per Rush", "value": line_stats["yardsPerRush"]},
+            ]
+            if position == "C":
+                offensive_line_stats.append({"name": "Team Sacks Allowed", "value": line_stats["sacksAllowed"]})
             categories.append({
-                "name": "Pass Protection",
-                "season": 2025,
-                "stats": [
-                    {"name": "Team Sacks Allowed", "value": self._team_sacks_allowed(team_abbreviation)},
-                ],
+                "name": "Offensive Line",
+                "season": max((year for year in seasons if year), default=2025),
+                "stats": offensive_line_stats,
             })
         allowed = {"defensive"} if defensive_line or defensive_back or linebacker else allowed_categories.get(position, set())
         for category in data.get("categories", []):
