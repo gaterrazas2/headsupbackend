@@ -309,7 +309,6 @@ class NFLManager:
                 for stat in useful:
                     if stat["name"].lower() == "stuffs":
                         stat["name"] = "Tackles for Loss (ESPN Stuffs)"
-                useful.append({"name": "Pressures", "value": "Not published by ESPN"})
             categories.append({"name": category.get("displayName"), "season": row.get("season", {}).get("year"), "stats": useful[:14]})
             games = self._number(stats.get("gamesPlayed")) or 1
             row_position = position or row.get("position")
