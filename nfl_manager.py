@@ -270,8 +270,9 @@ class NFLManager:
         projected = {}
         opponent = self._metric_for(opponent_abbreviation) if opponent_abbreviation else {}
         position = (position or "").upper()
-        offensive_line = {"C", "G", "LG", "RG", "T", "LT", "RT", "OL"}
-        defensive_line = {"DE", "LDE", "RDE", "LE", "RE", "DT", "NT", "DL"}
+        defensive_line = position in {"DE", "LDE", "RDE", "LE", "RE", "DT", "LDT", "RDT", "NT", "DL"} or position.endswith(("DE", "DT"))
+        defensive_back = position in {"CB", "LCB", "RCB", "NB", "DB", "S", "FS", "SS"} or position.endswith(("CB", "S"))
+        linebacker = position in {"LB", "ILB", "OLB", "MLB", "LILB", "RILB", "WLB", "SLB"} or position.endswith("LB")
         allowed_categories = {
             "QB": {"passing", "rushing"},
             "RB": {"rushing", "receiving"},
@@ -282,17 +283,15 @@ class NFLManager:
             "PK": {"kicking"},
             "P": {"punting"},
         }
-        if position in offensive_line:
+        if position == "C":
             categories.append({
                 "name": "Pass Protection",
                 "season": 2025,
                 "stats": [
                     {"name": "Team Sacks Allowed", "value": self._team_sacks_allowed(team_abbreviation)},
-                    {"name": "Individual Sacks Allowed", "value": "Not published by ESPN"},
                 ],
-                "note": "ESPN does not publish individual offensive-line sacks allowed; the team total is shown for context.",
             })
-        allowed = {"defensive"} if position in defensive_line or position in {"LB", "ILB", "OLB", "MLB", "CB", "DB", "S", "FS", "SS"} else allowed_categories.get(position, set())
+        allowed = {"defensive"} if defensive_line or defensive_back or linebacker else allowed_categories.get(position, set())
         for category in data.get("categories", []):
             category_name = (category.get("name") or category.get("displayName") or "").lower()
             if category_name not in allowed:
@@ -306,9 +305,9 @@ class NFLManager:
                 {"name": display, "value": value}
                 for name, display, value in zip(category.get("names", []), category.get("displayNames", []), row.get("stats", []))
                 if value not in ("0", "0.0", "--", None)
-                and not (position in defensive_line and name not in {"gamesPlayed", "totalTackles", "soloTackles", "assistTackles", "sacks", "stuffs", "forcedFumbles", "fumbleRecoveries"})
+                and not (defensive_line and name not in {"gamesPlayed", "totalTackles", "soloTackles", "assistTackles", "sacks", "stuffs", "forcedFumbles", "fumbleRecoveries"})
             ]
-            if position in defensive_line:
+            if defensive_line:
                 for stat in useful:
                     if stat["name"].lower() == "stuffs":
                         stat["name"] = "Tackles for Loss (ESPN Stuffs)"
