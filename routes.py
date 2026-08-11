@@ -205,6 +205,17 @@ def publish_guest_submission(post_id):
         return jsonify({"error": "Submission not found"}), 404
     return jsonify({"post": submission, "message": "Guest post published"})
 
+
+@app.delete("/admin/guest-submissions/<post_id>")
+@login_required
+def delete_guest_submission(post_id):
+    csrf_error = require_csrf()
+    if csrf_error:
+        return csrf_error
+    if not backend.delete_pending_guest_submission(post_id):
+        return jsonify({"error": "Submission not found"}), 404
+    return jsonify({"message": "Submission permanently deleted"})
+
 # Send to DB
 @app.route("/post", methods=['POST'])
 @login_required

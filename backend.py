@@ -510,6 +510,18 @@ class Backend:
         updated["submissionStatus"] = "published"
         return updated
 
+    def delete_pending_guest_submission(self, post_id):
+        try:
+            object_id = ObjectId(post_id)
+        except (InvalidId, TypeError):
+            return False
+        result = self.collection.delete_one({
+            "_id": object_id,
+            "category": "guest",
+            "submissionStatus": "pending",
+        })
+        return result.deleted_count == 1
+
     def get_published_guest_posts(self):
         documents = self.collection.find(
             {"category": "guest", "submissionStatus": "published"},
