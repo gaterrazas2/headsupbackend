@@ -1,5 +1,7 @@
 import csv
+import html
 import json
+import re
 import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
@@ -15,6 +17,8 @@ class NFLManager:
     ABBR_TO_DATA = {"LAR": "LA", "WSH": "WAS"}
     _metrics_cache = None
     _metrics_cached_at = 0
+    _power_rankings_cache = None
+    _power_rankings_cached_at = 0
 
     def _json(self, url):
         request = Request(url, headers={"User-Agent": "LittleBrotherNFL/1.0", "Accept": "application/json"})
@@ -78,6 +82,46 @@ class NFLManager:
     def _metric_for(self, abbreviation):
         key = self.ABBR_TO_DATA.get(abbreviation, abbreviation)
         return self._team_metrics().get(key, {})
+
+    def _espn_power_rankings(self):
+        if self._power_rankings_cache and time.time() - self._power_rankings_cached_at < 21600:
+            return self._power_rankings_cache
+        try:
+            search = self._json(
+                "https://site.web.api.espn.com/apis/search/v2?query=nfl%20power%20rankings&limit=20"
+            )
+            articles = next(
+                (result.get("contents", []) for result in search.get("results", []) if result.get("type") == "article"),
+                [],
+            )
+            candidates = [
+                article for article in articles
+                if "nfl power rankings" in (article.get("displayName") or "").lower()
+                and "future power rankings" not in (article.get("displayName") or "").lower()
+            ]
+            latest = max(candidates, key=lambda article: article.get("date") or "")
+            article = self._json(f"https://content.core.api.espn.com/v1/sports/news/{latest['id']}")["headlines"][0]
+            rankings = {}
+            pattern = r'<h2[^>]*>\s*(\d+)\.\s*<a[^>]*?/name/([^/\"]+)[^>]*>(.*?)</a>\s*</h2>'
+            for rank, abbreviation, team_name in re.findall(pattern, article.get("story", ""), re.I | re.S):
+                rankings[abbreviation.upper()] = {
+                    "rank": int(rank),
+                    "team": html.unescape(re.sub(r"<[^>]+>", "", team_name)).strip(),
+                }
+            if len(rankings) != 32:
+                raise ValueError(f"Expected 32 ESPN power rankings, found {len(rankings)}")
+            self._power_rankings_cache = {
+                "rankings": rankings,
+                "title": article.get("headline"),
+                "published": article.get("published"),
+                "link": latest.get("link", {}).get("web"),
+            }
+            self._power_rankings_cached_at = time.time()
+        except Exception as error:
+            print(f"ESPN power rankings error: {error}")
+            if not self._power_rankings_cache:
+                self._power_rankings_cache = {"rankings": {}, "title": None, "published": None, "link": None}
+        return self._power_rankings_cache
 
     def weekly_matchups(self):
         scoreboard = self._json(f"{self.ESPN_SITE}/scoreboard?limit=50")
@@ -201,6 +245,11 @@ class NFLManager:
             source = competitors.get(side, {}).get("team", {})
             teams[side] = self._team_summary(source)
 
+        power_rankings = self._espn_power_rankings()
+        for team in teams.values():
+            ranking = power_rankings["rankings"].get(team.get("abbreviation"), {})
+            team["powerRank"] = ranking.get("rank")
+
         injuries = {}
         unavailable_by_team = defaultdict(set)
         injury_groups = summary.get("injuries", {})
@@ -282,6 +331,11 @@ class NFLManager:
                 for article in relevant_articles[:6]
             ],
             "rankingsSeason": 2025,
+            "powerRankings": {
+                "title": power_rankings.get("title"),
+                "published": power_rankings.get("published"),
+                "link": power_rankings.get("link"),
+            },
         }
 
     def _team_sacks_allowed(self, team_abbreviation):
