@@ -7,6 +7,7 @@ from pypdf import PdfReader
 from openai import OpenAI
 from dotenv import load_dotenv
 from baseball_predictor import BaseballPredictor
+from fantasy_manager import FantasyManager
 from werkzeug.security import check_password_hash, generate_password_hash
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -39,11 +40,13 @@ class Backend:
         self.db = self.client["LittleBrotherBlog"]
         self.collection = self.db["Posts"]
         self.predictions = self.db["ModelPredictions"]
+        self.fantasy_recommendations = self.db["FantasyRecommendations"]
 
         self.context = self.load_context()
         self.name = "Gabriel Terrazas"
         self.openai = OpenAI()
         self.predictor = BaseballPredictor()
+        self.fantasy = FantasyManager(self.fantasy_recommendations)
 
     def record_model_prediction(self, payload, probabilities, nrfi_probability):
         """Keep the first pregame forecast so later refreshes cannot rewrite history."""

@@ -277,6 +277,55 @@ def model_performance():
         print(f"Model performance error: {error}")
         return jsonify({"error": "Could not load model performance"}), 500
 
+
+@app.get("/admin/fantasy/status")
+@login_required
+def fantasy_status():
+    return jsonify({
+        "configured": backend.fantasy.configured(),
+        "leagues": [
+            {"key": key, **config}
+            for key, config in backend.fantasy.LEAGUES.items()
+        ],
+    })
+
+
+@app.post("/admin/fantasy/leagues/<league_key>/recommendations")
+@login_required
+def fantasy_recommendations(league_key):
+    csrf_error = require_csrf()
+    if csrf_error:
+        return csrf_error
+    try:
+        plan = backend.fantasy.save_plan(backend.fantasy.build_plan(league_key))
+        return jsonify(plan)
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+    except Exception as error:
+        print(f"Fantasy recommendation error: {error}")
+        return jsonify({"error": "Could not load ESPN recommendations"}), 502
+
+
+@app.post("/admin/fantasy/recommendations/<plan_id>/<decision>")
+@login_required
+def review_fantasy_recommendation(plan_id, decision):
+    csrf_error = require_csrf()
+    if csrf_error:
+        return csrf_error
+    try:
+        if decision == "approve":
+            result = backend.fantasy.approve_plan(plan_id)
+        elif decision == "deny":
+            result = backend.fantasy.deny_plan(plan_id)
+        else:
+            return jsonify({"error": "Decision must be approve or deny"}), 400
+        return jsonify(result)
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+    except Exception as error:
+        print(f"Fantasy approval error: {error}")
+        return jsonify({"error": "ESPN could not complete that action. No further moves were attempted."}), 502
+
 # Get number of emails added
 @app.route("/getEmailCount")
 @login_required
