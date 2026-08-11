@@ -14,7 +14,9 @@ class FantasyManager:
     }
     BENCH_SLOT = 20
     IR_SLOT = 21
-    POSITION_NAMES = {0: "QB", 2: "RB", 4: "WR", 6: "TE", 16: "D/ST", 17: "K"}
+    LINEUP_POSITION_NAMES = {0: "QB", 2: "RB", 4: "WR", 6: "TE", 16: "D/ST", 17: "K"}
+    PLAYER_POSITION_NAMES = {1: "QB", 2: "RB", 3: "WR", 4: "TE", 5: "K", 16: "D/ST"}
+    POSITION_STARTER_SLOTS = {1: 0, 2: 2, 3: 4, 4: 6, 5: 17, 16: 16}
 
     def __init__(self, recommendations_collection):
         self.recommendations = recommendations_collection
@@ -78,7 +80,7 @@ class FantasyManager:
             "id": player.get("id"),
             "name": player.get("fullName", "Unknown player"),
             "positionId": player.get("defaultPositionId"),
-            "position": self.POSITION_NAMES.get(player.get("defaultPositionId"), "FLEX"),
+            "position": self.PLAYER_POSITION_NAMES.get(player.get("defaultPositionId"), "FLEX"),
             "eligibleSlots": player.get("eligibleSlots", []),
             "lineupSlotId": entry.get("lineupSlotId", self.BENCH_SLOT),
             "projectedPoints": self._projection(player, week),
@@ -124,7 +126,7 @@ class FantasyManager:
         fantasy_filter = {
             "players": {
                 "filterStatus": {"value": ["FREEAGENT", "WAIVERS"]},
-                "filterSlotIds": {"value": list(self.POSITION_NAMES)},
+                "filterSlotIds": {"value": list(self.LINEUP_POSITION_NAMES)},
                 "limit": 100,
                 "sortPercOwned": {"sortPriority": 1, "sortAsc": False},
             }
@@ -140,7 +142,7 @@ class FantasyManager:
                 "id": player.get("id"),
                 "name": player.get("fullName", "Unknown player"),
                 "positionId": player.get("defaultPositionId"),
-                "position": self.POSITION_NAMES.get(player.get("defaultPositionId"), "FLEX"),
+                "position": self.PLAYER_POSITION_NAMES.get(player.get("defaultPositionId"), "FLEX"),
                 "projectedPoints": self._projection(player, week),
                 "status": entry.get("status", "FREEAGENT"),
             })
@@ -240,6 +242,93 @@ class FantasyManager:
             "lineupMoves": lineup_moves,
             "addDropMoves": add_drop_moves,
             "roster": players,
+        }
+
+    def draft_board(self, league_key):
+        config = self.LEAGUES.get(league_key)
+        if not config:
+            raise ValueError("Unknown fantasy league")
+        if not self.configured():
+            raise ValueError("ESPN connection is not configured")
+
+        league = self._request_json(
+            f'{self._league_url(config["leagueId"])}?view=mTeam&view=mRoster&view=mSettings'
+        )
+        team = self._owned_team(league)
+        entries = (team.get("roster") or {}).get("entries", [])
+        roster_counts = {}
+        for entry in entries:
+            position_id = (entry.get("playerPoolEntry") or {}).get("player", {}).get("defaultPositionId")
+            roster_counts[position_id] = roster_counts.get(position_id, 0) + 1
+
+        scoring_items = league.get("settings", {}).get("scoringSettings", {}).get("scoringItems", [])
+        reception_points = next(
+            (float(item.get("points", 0)) for item in scoring_items if item.get("statId") == 53),
+            0,
+        )
+        rank_type = "PPR" if reception_points >= 0.5 else "STANDARD"
+        fantasy_filter = {
+            "players": {
+                "filterStatus": {"value": ["FREEAGENT", "WAIVERS"]},
+                "filterSlotIds": {"value": list(self.LINEUP_POSITION_NAMES)},
+                "limit": 100,
+                "sortDraftRanks": {"sortPriority": 1, "sortAsc": True, "value": rank_type},
+            }
+        }
+        available = self._request_json(
+            f'{self._league_url(config["leagueId"])}?view=kona_player_info',
+            headers={"X-Fantasy-Filter": json.dumps(fantasy_filter)},
+        ).get("players", [])
+
+        slot_counts = league.get("settings", {}).get("rosterSettings", {}).get("lineupSlotCounts", {})
+        recommendations = []
+        for entry in available:
+            player = entry.get("player", {})
+            position_id = player.get("defaultPositionId")
+            if position_id not in self.PLAYER_POSITION_NAMES:
+                continue
+            rank_data = (player.get("draftRanksByRankType") or {}).get(rank_type, {})
+            rank = rank_data.get("rank")
+            if not rank:
+                continue
+            starter_slot = self.POSITION_STARTER_SLOTS.get(position_id)
+            starter_target = int(slot_counts.get(str(starter_slot), 0)) if starter_slot is not None else 0
+            current_count = roster_counts.get(position_id, 0)
+            needs_starter = position_id not in (5, 16) and current_count < starter_target
+            ownership = player.get("ownership", {}) or {}
+            season_projection = self._projection(player, 1)
+            reason = "Best player available by ESPN draft rank"
+            if needs_starter:
+                reason = f'Fills a starting {self.PLAYER_POSITION_NAMES[position_id]} need'
+            elif current_count:
+                reason = f'Adds depth at {self.PLAYER_POSITION_NAMES[position_id]}'
+            recommendations.append({
+                "playerId": player.get("id"),
+                "name": player.get("fullName", "Unknown player"),
+                "position": self.PLAYER_POSITION_NAMES[position_id],
+                "rank": int(rank),
+                "adp": round(float(ownership.get("averageDraftPosition") or 0), 1),
+                "auctionValue": rank_data.get("auctionValue"),
+                "projectedPoints": season_projection,
+                "injuryStatus": player.get("injuryStatus", "ACTIVE"),
+                "reason": reason,
+                "needsStarter": needs_starter,
+                "recommendationScore": int(rank) - (8 if entries and needs_starter else 0),
+            })
+
+        recommendations.sort(key=lambda player: (player["recommendationScore"], player["rank"]))
+        for player in recommendations:
+            player.pop("recommendationScore", None)
+        team_name = team.get("name") or f'{team.get("location", "")} {team.get("nickname", "")}'.strip()
+        draft_settings = league.get("settings", {}).get("draftSettings", {})
+        return {
+            "leagueName": config["name"],
+            "teamName": team_name,
+            "rankType": rank_type,
+            "draftType": draft_settings.get("type", "SNAKE"),
+            "draftDate": draft_settings.get("date"),
+            "rosterSize": len(entries),
+            "players": recommendations[:30],
         }
 
     def save_plan(self, plan):
