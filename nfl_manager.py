@@ -346,6 +346,7 @@ class NFLManager:
         is_rookie = experience_years is not None and experience_years <= 1
         previous_abbreviation = latest_history_team.get("abbreviation") if latest_history_team else None
         new_team = bool(previous_abbreviation and team_abbreviation and previous_abbreviation != team_abbreviation)
+        categories.sort(key=lambda category: category.get("season") or 0, reverse=True)
 
         return {
             "categories": categories,
