@@ -166,8 +166,8 @@ class BaseballPredictor:
         home_starter = stats.get("probablePitchers", {}).get("home", {}) or {}
         away_starter = stats.get("probablePitchers", {}).get("away", {}) or {}
 
-        home_era = self._safe_float(home_starter.get("era"))
-        away_era = self._safe_float(away_starter.get("era"))
+        home_era = self._safe_float(home_starter.get("xera")) or self._safe_float(home_starter.get("era"))
+        away_era = self._safe_float(away_starter.get("xera")) or self._safe_float(away_starter.get("era"))
         home_whip = self._safe_float(home_starter.get("whip"))
         away_whip = self._safe_float(away_starter.get("whip"))
 
@@ -204,6 +204,30 @@ class BaseballPredictor:
             raw_score += (home_record_pct - away_record_pct) * 1.8
 
         raw_score += (home_offense_score - away_offense_score) * 0.45
+
+        recent = stats.get("gameContext", {}).get("recent", {}) or {}
+        home_recent = recent.get("home", {}) or {}
+        away_recent = recent.get("away", {}) or {}
+        home_bullpen = self._safe_float(home_recent.get("bullpenPitchesLast3"))
+        away_bullpen = self._safe_float(away_recent.get("bullpenPitchesLast3"))
+        if home_bullpen is not None and away_bullpen is not None:
+            raw_score += (away_bullpen - home_bullpen) / 450.0
+        home_rest = self._safe_float(home_recent.get("daysRest"))
+        away_rest = self._safe_float(away_recent.get("daysRest"))
+        if home_rest is not None and away_rest is not None:
+            raw_score += self._clamp(home_rest - away_rest, -2, 2) * 0.05
+        if away_recent.get("traveled"):
+            raw_score += 0.04
+        if home_recent.get("traveled"):
+            raw_score -= 0.04
+
+        # Park factors primarily affect scoring confidence rather than which team
+        # is stronger, so only use a very small home-side adjustment here.
+        park_runs = self._safe_float(
+            stats.get("gameContext", {}).get("parkFactor", {}).get("runs")
+        )
+        if park_runs is not None:
+            raw_score += self._clamp((park_runs - 100.0) / 100.0, -0.2, 0.2) * 0.08
 
         if home_era is not None and away_era is not None:
             raw_score += ((away_era - home_era) / 2.0) * 0.8
@@ -245,6 +269,13 @@ class BaseballPredictor:
         elif pitcher_lean and away_team in pitcher_lean:
             raw_score -= 0.10
 
+        # Pull uncertain pregame forecasts toward 50% instead of presenting
+        # high confidence before pitchers and lineups are confirmed.
+        if not stats.get("gameContext", {}).get("lineupsConfirmed"):
+            raw_score *= 0.78
+        if not home_starter.get("id") or not away_starter.get("id"):
+            raw_score *= 0.75
+
         home_prob = self._sigmoid(raw_score)
         home_prob = self._clamp(home_prob, 0.01, 0.99)
         away_prob = 1 - home_prob
@@ -253,10 +284,21 @@ class BaseballPredictor:
         away_pct = 100 - home_pct
         model_favorite = home_team if home_pct >= away_pct else away_team
 
+        quality = 100
+        if not stats.get("gameContext", {}).get("lineupsConfirmed"):
+            quality -= 20
+        if not home_starter.get("id") or not away_starter.get("id"):
+            quality -= 25
+        if not (stats.get("gameContext", {}).get("recent", {}).get("home", {}).get("gamesTracked") and stats.get("gameContext", {}).get("recent", {}).get("away", {}).get("gamesTracked")):
+            quality -= 10
+        if not stats.get("gameContext", {}).get("parkFactor"):
+            quality -= 5
+
         return {
             "homeWinProbability": home_pct,
             "awayWinProbability": away_pct,
             "modelFavorite": model_favorite,
+            "dataQuality": max(35, quality),
         }
 
     def _calculate_batter_hit_prop(self, payload):
@@ -274,6 +316,7 @@ class BaseballPredictor:
         batter_obp = self._safe_float(batter.get("obp"))
         batter_ops = self._safe_float(batter.get("ops"))
         batter_slg = self._safe_float(batter.get("slg"))
+        batter_xwoba = self._safe_float(batter.get("xwoba"))
         pitcher_era = self._safe_float(pitcher.get("era"))
         pitcher_whip = self._safe_float(pitcher.get("whip"))
 
@@ -308,6 +351,10 @@ class BaseballPredictor:
 
         if batter_slg is not None:
             score += (batter_slg - 0.400) * 0.7
+
+        if batter_xwoba is not None:
+            score += (batter_xwoba - 0.320) * 2.0
+            reasons.append("Statcast expected contact quality")
 
         if team_avg is not None:
             score += (team_avg - 0.245) * 3.0

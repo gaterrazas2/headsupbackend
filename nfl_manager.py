@@ -35,19 +35,30 @@ class NFLManager:
             return self._metrics_cache
 
         rows = [row for row in csv.DictReader(StringIO(self._text(self.TEAM_STATS_URL))) if row.get("season_type") == "REG"]
-        offense = defaultdict(lambda: {"games": 0, "pass": 0.0, "rush": 0.0})
-        defense = defaultdict(lambda: {"games": 0, "pass": 0.0, "rush": 0.0})
+        offense = defaultdict(lambda: {"games": 0, "pass": 0.0, "rush": 0.0, "epa": 0.0, "plays": 0.0, "turnovers": 0.0, "special": 0.0})
+        defense = defaultdict(lambda: {"games": 0, "pass": 0.0, "rush": 0.0, "epa": 0.0, "plays": 0.0, "takeaways": 0.0})
         for row in rows:
             team = row.get("team")
             opponent = row.get("opponent_team")
             passing = float(row.get("passing_yards") or 0)
             rushing = float(row.get("rushing_yards") or 0)
+            plays = float(row.get("attempts") or 0) + float(row.get("sacks_suffered") or 0) + float(row.get("carries") or 0)
+            epa = float(row.get("passing_epa") or 0) + float(row.get("rushing_epa") or 0)
+            turnovers = float(row.get("passing_interceptions") or 0) + float(row.get("fumbles_lost_total") or 0)
+            special = float(row.get("special_teams_tds") or 0) * 6 + float(row.get("fg_pct") or 0) / 100 + float(row.get("pt_net_yards") or 0) / 1000
             offense[team]["games"] += 1
             offense[team]["pass"] += passing
             offense[team]["rush"] += rushing
+            offense[team]["epa"] += epa
+            offense[team]["plays"] += plays
+            offense[team]["turnovers"] += turnovers
+            offense[team]["special"] += special
             defense[opponent]["games"] += 1
             defense[opponent]["pass"] += passing
             defense[opponent]["rush"] += rushing
+            defense[opponent]["epa"] += epa
+            defense[opponent]["plays"] += plays
+            defense[opponent]["takeaways"] += turnovers
 
         metrics = {}
         for team in offense:
@@ -60,7 +71,17 @@ class NFLManager:
                 "defensePassYpg": round(defense[team]["pass"] / def_games, 1),
                 "defenseRushYpg": round(defense[team]["rush"] / def_games, 1),
                 "defenseTotalYpg": round((defense[team]["pass"] + defense[team]["rush"]) / def_games, 1),
+                "offenseEpaPerPlay": round(offense[team]["epa"] / max(offense[team]["plays"], 1), 3),
+                "defenseEpaPerPlay": round(defense[team]["epa"] / max(defense[team]["plays"], 1), 3),
+                "turnoverMarginPerGame": round((defense[team]["takeaways"] - offense[team]["turnovers"]) / games, 2),
+                "specialTeamsScore": round(offense[team]["special"] / games, 2),
             }
+            metrics[team]["netEpaPerPlay"] = round(metrics[team]["offenseEpaPerPlay"] - metrics[team]["defenseEpaPerPlay"], 3)
+
+        for team in metrics:
+            opponents = [row.get("opponent_team") for row in rows if row.get("team") == team]
+            opponent_strength = sum(metrics.get(opponent, {}).get("netEpaPerPlay", 0) for opponent in opponents) / max(len(opponents), 1)
+            metrics[team]["adjustedEpaPerPlay"] = round(metrics[team]["netEpaPerPlay"] + opponent_strength * 0.35, 3)
 
         rank_fields = {
             "offensePassRank": ("offensePassYpg", True),
@@ -69,6 +90,7 @@ class NFLManager:
             "defensePassRank": ("defensePassYpg", False),
             "defenseRushRank": ("defenseRushYpg", False),
             "defenseRank": ("defenseTotalYpg", False),
+            "epaRank": ("adjustedEpaPerPlay", True),
         }
         for rank_name, (field, descending) in rank_fields.items():
             ordered = sorted(metrics, key=lambda team: metrics[team][field], reverse=descending)
@@ -156,16 +178,14 @@ class NFLManager:
             elif odds.get("awayTeamOdds", {}).get("favorite"):
                 favorite_id = away_team.get("id")
 
-            if favorite_id == home_team.get("id"):
-                projected_winner = home_team.get("displayName")
-            elif favorite_id == away_team.get("id"):
-                projected_winner = away_team.get("displayName")
-            else:
-                home_metrics = self._metric_for(home_team.get("abbreviation"))
-                away_metrics = self._metric_for(away_team.get("abbreviation"))
-                home_score = home_metrics.get("offenseRank", 16) + home_metrics.get("defenseRank", 16) - 1
-                away_score = away_metrics.get("offenseRank", 16) + away_metrics.get("defenseRank", 16)
-                projected_winner = home_team.get("displayName") if home_score <= away_score else away_team.get("displayName")
+            home_metrics = self._metric_for(home_team.get("abbreviation"))
+            away_metrics = self._metric_for(away_team.get("abbreviation"))
+            model_edge = home_metrics.get("adjustedEpaPerPlay", 0) - away_metrics.get("adjustedEpaPerPlay", 0)
+            model_edge += (home_metrics.get("turnoverMarginPerGame", 0) - away_metrics.get("turnoverMarginPerGame", 0)) * 0.012
+            model_edge += (home_metrics.get("specialTeamsScore", 0) - away_metrics.get("specialTeamsScore", 0)) * 0.004
+            model_edge += 0.025
+            market_edge = 0.035 if favorite_id == home_team.get("id") else -0.035 if favorite_id == away_team.get("id") else 0
+            projected_winner = home_team.get("displayName") if model_edge * 0.7 + market_edge * 0.3 >= 0 else away_team.get("displayName")
 
             venue = competition.get("venue", {})
             address = venue.get("address", {})

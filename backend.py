@@ -13,12 +13,47 @@ from werkzeug.security import check_password_hash, generate_password_hash
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.request import urlopen
+from urllib.request import Request
+from io import StringIO
+from html.parser import HTMLParser
+import csv
 import os
 import json
 import re
+import time
+
+
+class _TableParser(HTMLParser):
+    """Small dependency-free parser for Baseball Savant leaderboard tables."""
+    def __init__(self):
+        super().__init__()
+        self.rows, self.row, self.cell = [], None, None
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "tr":
+            self.row = []
+        elif tag in {"th", "td"} and self.row is not None:
+            self.cell = []
+
+    def handle_data(self, data):
+        if self.cell is not None:
+            self.cell.append(data)
+
+    def handle_endtag(self, tag):
+        if tag in {"th", "td"} and self.cell is not None:
+            self.row.append(" ".join("".join(self.cell).split()))
+            self.cell = None
+        elif tag == "tr" and self.row is not None:
+            if self.row:
+                self.rows.append(self.row)
+            self.row = None
 
 
 class Backend:
+    _statcast_cache = None
+    _statcast_cached_at = 0
+    _park_factor_cache = None
+    _park_factor_cached_at = 0
     EDITABLE_POST_FIELDS = {
         "title", "category", "image", "backImage", "stockImage",
         "takenPhoto", "audioFile", "description", "link", "price",
@@ -73,12 +108,93 @@ class Backend:
                     "awayWinProbability": probabilities["awayWinProbability"],
                     "modelFavorite": probabilities["modelFavorite"],
                     "nrfiProbability": nrfi_probability,
+                    "dataQuality": probabilities.get("dataQuality"),
                     "createdAt": datetime.now(timezone.utc),
                     "settled": False,
                 }
             },
             upsert=True,
         )
+
+    def _statcast_expected(self):
+        if self._statcast_cache and time.time() - self._statcast_cached_at < 21600:
+            return self._statcast_cache
+        season = datetime.now(timezone.utc).year
+        result = {"batter": {}, "pitcher": {}}
+        for stat_type in result:
+            url = f"https://baseballsavant.mlb.com/leaderboard/expected_statistics?type={stat_type}&year={season}&position=&team=&min=1&csv=true"
+            request = Request(url, headers={"User-Agent": "LittleBrotherMLB/1.0"})
+            with urlopen(request, timeout=30) as response:
+                rows = csv.DictReader(StringIO(response.read().decode("utf-8-sig")))
+                result[stat_type] = {str(row.get("player_id")): row for row in rows if row.get("player_id")}
+        self._statcast_cache = result
+        self._statcast_cached_at = time.time()
+        return result
+
+    def _enrich_statcast(self, payload):
+        try:
+            expected = self._statcast_expected()
+            stats = payload.get("stats", {}) or {}
+            batter = stats.get("currentMatchup", {}).get("batter") or {}
+            batter_row = expected["batter"].get(str(batter.get("id")))
+            if batter_row:
+                batter["xwoba"] = batter_row.get("est_woba")
+                batter["xba"] = batter_row.get("est_ba")
+                batter["xslg"] = batter_row.get("est_slg")
+            for pitcher in (stats.get("probablePitchers", {}) or {}).values():
+                row = expected["pitcher"].get(str(pitcher.get("id")))
+                if row:
+                    pitcher["xera"] = row.get("xera")
+                    pitcher["xwobaAllowed"] = row.get("est_woba")
+            current_pitcher = stats.get("currentMatchup", {}).get("pitcher") or {}
+            row = expected["pitcher"].get(str(current_pitcher.get("id")))
+            if row:
+                current_pitcher["xera"] = row.get("xera")
+                current_pitcher["xwobaAllowed"] = row.get("est_woba")
+        except Exception as error:
+            print(f"Could not enrich Baseball Savant metrics: {error}")
+        return payload
+
+    def _park_factors(self):
+        if self._park_factor_cache and time.time() - self._park_factor_cached_at < 21600:
+            return self._park_factor_cache
+        season = datetime.now(timezone.utc).year
+        url = f"https://baseballsavant.mlb.com/leaderboard/statcast-park-factors?type=year&year={season}&rolling=3"
+        request = Request(url, headers={"User-Agent": "LittleBrotherMLB/1.0"})
+        with urlopen(request, timeout=30) as response:
+            parser = _TableParser()
+            parser.feed(response.read().decode("utf-8", errors="ignore"))
+        header = next((row for row in parser.rows if "Venue" in row and "Park Factor" in row), None)
+        factors = {}
+        if header:
+            venue_index = header.index("Venue")
+            factor_index = header.index("Park Factor")
+            runs_index = header.index("R") if "R" in header else factor_index
+            for row in parser.rows:
+                if len(row) > max(venue_index, factor_index, runs_index) and row != header:
+                    try:
+                        factors[row[venue_index]] = {
+                            "overall": float(row[factor_index]),
+                            "runs": float(row[runs_index]),
+                            "source": "Baseball Savant rolling 3-year park factors",
+                        }
+                    except (TypeError, ValueError):
+                        continue
+        if factors:
+            self._park_factor_cache = factors
+            self._park_factor_cached_at = time.time()
+        return factors
+
+    def _enrich_park_factor(self, payload):
+        try:
+            stats = payload.get("stats", {}) or {}
+            venue = stats.get("venue")
+            factor = self._park_factors().get(venue)
+            if factor:
+                stats.setdefault("gameContext", {})["parkFactor"] = factor
+        except Exception as error:
+            print(f"Could not enrich park factors: {error}")
+        return payload
 
     def _official_game_result(self, game_id):
         url = f"https://statsapi.mlb.com/api/v1.1/game/{game_id}/feed/live"
@@ -614,8 +730,8 @@ class Backend:
             except Exception:
                 return fallback
 
-        home_era = safe_float(home_pitcher.get("era"), 4.50)
-        away_era = safe_float(away_pitcher.get("era"), 4.50)
+        home_era = safe_float(home_pitcher.get("xera"), safe_float(home_pitcher.get("era"), 4.50))
+        away_era = safe_float(away_pitcher.get("xera"), safe_float(away_pitcher.get("era"), 4.50))
         home_whip = safe_float(home_pitcher.get("whip"), 1.35)
         away_whip = safe_float(away_pitcher.get("whip"), 1.35)
         home_k9 = safe_float(home_pitcher.get("strikeoutsPer9Inn"), 8.50)
@@ -652,11 +768,35 @@ class Backend:
 
         raw_nrfi = 52 + pitcher_score - offense_score
 
+        context = stats.get("gameContext", {}) or {}
+        weather = context.get("weather", {}) or {}
+        temperature = safe_float(weather.get("temp"), 72)
+        wind = str(weather.get("wind", "")).lower()
+        if temperature >= 85:
+            raw_nrfi -= 1.5
+        elif temperature <= 50:
+            raw_nrfi += 1.5
+        if "out" in wind:
+            raw_nrfi -= 1.5
+        elif "in" in wind:
+            raw_nrfi += 1.0
+        recent = context.get("recent", {}) or {}
+        bullpen_load = sum(safe_float((recent.get(side) or {}).get("bullpenPitchesLast3"), 0) for side in ("home", "away"))
+        if bullpen_load > 300:
+            raw_nrfi -= 1.0
+        park_runs = safe_float((context.get("parkFactor") or {}).get("runs"), 100)
+        raw_nrfi -= (park_runs - 100) * 0.12
+
+        if not context.get("lineupsConfirmed"):
+            raw_nrfi = 50 + (raw_nrfi - 50) * 0.75
+
         nrfi_probability = max(35, min(75, raw_nrfi))
 
         return round(nrfi_probability)
 
     async def getOdds(self, payload):
+        payload = self._enrich_statcast(payload)
+        payload = self._enrich_park_factor(payload)
         probabilities = self.predictor.calculate_win_probability(payload)
         props = self.predictor.calculate_props(payload)
 
@@ -678,7 +818,7 @@ class Backend:
             "Analyze live and pregame baseball data and return only valid JSON. "
             "Use all provided metrics, including team records, team hitting metrics, "
             "probable pitchers, pitcher handedness, batter handedness, batter AVG, OPS, OBP, SLG, "
-            "pitcher ERA, WHIP, K/9, BB/9, current score, inning, outs, count, runners on base, "
+            "pitcher ERA, xERA, WHIP, K/9, BB/9, batter xwOBA, confirmed-lineup status, bullpen workload, rest, travel, Baseball Savant park factor, weather, umpire, current score, inning, outs, count, runners on base, "
             "the provided betting signals, the model win probabilities, the NRFI probability, "
             "and the calculated props. "
             "Do not use or assume sportsbook lines. "
@@ -750,6 +890,7 @@ class Backend:
             "homeWinProbability": probabilities["homeWinProbability"],
             "awayWinProbability": probabilities["awayWinProbability"],
             "modelFavorite": probabilities["modelFavorite"],
+            "dataQuality": probabilities.get("dataQuality"),
             "nrfiProbability": nrfi_probability,
             "props": props,
         }
@@ -760,8 +901,13 @@ class Backend:
             parsed["homeWinProbability"] = probabilities["homeWinProbability"]
             parsed["awayWinProbability"] = probabilities["awayWinProbability"]
             parsed["modelFavorite"] = probabilities["modelFavorite"]
+            parsed["dataQuality"] = probabilities.get("dataQuality")
             parsed["nrfiProbability"] = nrfi_probability
             parsed["props"] = props
+            if probabilities.get("dataQuality", 100) < 70:
+                parsed["confidence"] = "Low"
+            elif probabilities.get("dataQuality", 100) < 85 and parsed.get("confidence") == "High":
+                parsed["confidence"] = "Medium"
 
             return parsed
         except Exception:
