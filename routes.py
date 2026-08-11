@@ -246,12 +246,13 @@ async def ask_question():
         print(f"Backend Error: {e}")
         return jsonify({"error": str(e)}), 500
     
-@app.route("/getodds", methods=['POST', 'OPTIONS'])
+@app.post("/getodds")
+@login_required
 async def get_odds():
-    if request.method == "OPTIONS":
-        return '', 200
-
     try:
+        csrf_error = require_csrf()
+        if csrf_error:
+            return csrf_error
         data = request.get_json()
         if not data:
             return jsonify({"error": "No data provided"}), 400
@@ -268,6 +269,7 @@ async def get_odds():
 
 @app.get("/model-performance")
 @limiter.limit("10 per minute")
+@login_required
 def model_performance():
     try:
         response = jsonify(backend.get_model_performance())
