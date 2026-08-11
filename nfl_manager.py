@@ -323,8 +323,6 @@ class NFLManager:
             "odds": {
                 "details": pick.get("details", "Not available"),
                 "overUnder": pick.get("overUnder"),
-                "homeMoneyline": pick.get("homeTeamOdds", {}).get("moneyLine"),
-                "awayMoneyline": pick.get("awayTeamOdds", {}).get("moneyLine"),
             },
             "articles": [
                 {"headline": article.get("headline"), "description": article.get("description"), "link": article.get("links", {}).get("web", {}).get("href")}
