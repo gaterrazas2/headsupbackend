@@ -238,6 +238,36 @@ class NFLManager:
         articles = summary.get("news") or []
         if isinstance(articles, dict):
             articles = articles.get("articles", [])
+        injury_terms = {
+            "injury", "injured", "inactive", "questionable", "doubtful", "ruled out",
+            "will not play", "won't play", "concussion", "reserve", "pup", "limited",
+        }
+        team_terms = {}
+        player_terms = set()
+        injured_player_terms = set()
+        for side, team in teams.items():
+            display_name = (team.get("name") or "").lower()
+            words = display_name.split()
+            team_terms[side] = {display_name, " ".join(words[:-1]), words[-1] if words else ""} - {""}
+            for unit in ("offense", "defense"):
+                for player in team.get("depthChart", {}).get(unit, []):
+                    name = (player.get("name") or "").lower()
+                    if name:
+                        player_terms.add(name)
+                        if player.get("injury"):
+                            injured_player_terms.add(name)
+
+        relevant_articles = []
+        for article in articles:
+            text = " ".join(filter(None, [article.get("headline"), article.get("description")])).lower()
+            mentions_sides = [any(term in text for term in team_terms.get(side, set())) for side in ("away", "home")]
+            mentions_player = any(name in text for name in player_terms)
+            mentions_injured_player = any(name in text for name in injured_player_terms)
+            injury_story = any(term in text for term in injury_terms) and (mentions_player or any(mentions_sides))
+            matchup_story = all(mentions_sides)
+            if injury_story or mentions_injured_player or matchup_story:
+                relevant_articles.append(article)
+
         return {
             "id": event_id,
             "teams": teams,
@@ -249,7 +279,7 @@ class NFLManager:
             },
             "articles": [
                 {"headline": article.get("headline"), "description": article.get("description"), "link": article.get("links", {}).get("web", {}).get("href")}
-                for article in articles[:8]
+                for article in relevant_articles[:6]
             ],
             "rankingsSeason": 2025,
         }
