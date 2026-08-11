@@ -185,7 +185,7 @@ class NFLManager:
                 "name": athlete.get("displayName"),
                 "shortName": athlete.get("shortName"),
                 "position": abbreviation,
-                "shape": "triangle" if abbreviation == "C" else "circle",
+                "shape": "circle",
                 "headshot": athlete.get("headshot", {}).get("href"),
                 "teamId": team.get("id"),
                 "team": team.get("abbreviation"),
