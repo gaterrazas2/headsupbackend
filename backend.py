@@ -8,6 +8,7 @@ from openai import OpenAI
 from dotenv import load_dotenv
 from baseball_predictor import BaseballPredictor
 from fantasy_manager import FantasyManager
+from nfl_manager import NFLManager
 from werkzeug.security import check_password_hash, generate_password_hash
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -47,6 +48,7 @@ class Backend:
         self.openai = OpenAI()
         self.predictor = BaseballPredictor()
         self.fantasy = FantasyManager(self.fantasy_recommendations)
+        self.nfl = NFLManager()
 
     def record_model_prediction(self, payload, probabilities, nrfi_probability):
         """Keep the first pregame forecast so later refreshes cannot rewrite history."""

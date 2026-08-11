@@ -340,6 +340,40 @@ def review_fantasy_recommendation(plan_id, decision):
         print(f"Fantasy approval error: {error}")
         return jsonify({"error": "ESPN could not complete that action. No further moves were attempted."}), 502
 
+
+@app.get("/admin/nfl/matchups")
+@login_required
+def nfl_matchups():
+    try:
+        return jsonify(backend.nfl.weekly_matchups())
+    except Exception as error:
+        print(f"NFL matchup error: {error}")
+        return jsonify({"error": "Could not load this week's NFL matchups"}), 502
+
+
+@app.get("/admin/nfl/matchups/<event_id>")
+@login_required
+def nfl_matchup_detail(event_id):
+    if not event_id.isdigit():
+        return jsonify({"error": "Invalid NFL matchup"}), 400
+    try:
+        return jsonify(backend.nfl.matchup_detail(event_id))
+    except Exception as error:
+        print(f"NFL detail error: {error}")
+        return jsonify({"error": "Could not load NFL matchup details"}), 502
+
+
+@app.get("/admin/nfl/players/<athlete_id>")
+@login_required
+def nfl_player_detail(athlete_id):
+    if not athlete_id.isdigit():
+        return jsonify({"error": "Invalid NFL player"}), 400
+    try:
+        return jsonify(backend.nfl.player_detail(athlete_id, request.args.get("opponent")))
+    except Exception as error:
+        print(f"NFL player error: {error}")
+        return jsonify({"error": "Could not load NFL player details"}), 502
+
 # Get number of emails added
 @app.route("/getEmailCount")
 @login_required
