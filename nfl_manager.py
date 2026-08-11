@@ -4,6 +4,7 @@ import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from io import StringIO
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 
@@ -265,7 +266,13 @@ class NFLManager:
         return "Not available"
 
     def player_detail(self, athlete_id, opponent_abbreviation=None, position=None, team_abbreviation=None):
-        data = self._json(f"{self.ESPN_WEB}/athletes/{athlete_id}/stats?region=us&lang=en&contentorigin=espn")
+        try:
+            data = self._json(f"{self.ESPN_WEB}/athletes/{athlete_id}/stats?region=us&lang=en&contentorigin=espn")
+        except HTTPError as error:
+            if error.code != 404:
+                raise
+            data = {"categories": [], "teams": {}}
+        athlete = self._json(f"https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/athletes/{athlete_id}?lang=en&region=us")
         categories = []
         projected = {}
         opponent = self._metric_for(opponent_abbreviation) if opponent_abbreviation else {}
@@ -290,41 +297,64 @@ class NFLManager:
                 "stats": [{"name": "Team Sacks Allowed", "value": self._team_sacks_allowed(team_abbreviation)}],
             })
         allowed = {"defensive"} if defensive_line or defensive_back or linebacker else allowed_categories.get(position, set())
-        for category in data.get("categories", []):
-            category_name = (category.get("name") or category.get("displayName") or "").lower()
-            if category_name not in allowed:
-                continue
-            rows = category.get("statistics", [])
-            if not rows:
-                continue
-            row = max(rows, key=lambda item: item.get("season", {}).get("year", 0))
-            stats = dict(zip(category.get("names", []), row.get("stats", [])))
-            useful = [
-                {"name": display, "value": value}
-                for name, display, value in zip(category.get("names", []), category.get("displayNames", []), row.get("stats", []))
-                if value not in ("0", "0.0", "--", None)
-                and not (defensive_line and name not in {"gamesPlayed", "totalTackles", "soloTackles", "assistTackles", "sacks", "stuffs", "forcedFumbles", "fumbleRecoveries"})
-            ]
-            if defensive_line:
-                for stat in useful:
-                    if stat["name"].lower() == "stuffs":
-                        stat["name"] = "Tackles for Loss (ESPN Stuffs)"
-            categories.append({"name": category.get("displayName"), "season": row.get("season", {}).get("year"), "stats": useful[:14]})
-            games = self._number(stats.get("gamesPlayed")) or 1
-            row_position = position or row.get("position")
-            if row_position == "QB" and stats.get("passingYards"):
-                baseline = self._number(stats["passingYards"]) / games
-                projected["passingYards"] = round(baseline * opponent.get("defensePassYpg", 220) / 220, 1)
-            if row_position == "RB" and stats.get("rushingYards"):
-                baseline = self._number(stats["rushingYards"]) / games
-                projected["rushingYards"] = round(baseline * opponent.get("defenseRushYpg", 110) / 110, 1)
-            if row_position in ("WR", "TE", "RB") and stats.get("receivingYards"):
-                baseline = self._number(stats["receivingYards"]) / games
-                projected["receivingYards"] = round(baseline * opponent.get("defensePassYpg", 220) / 220, 1)
+        relevant_categories = [
+            category for category in data.get("categories", [])
+            if (category.get("name") or category.get("displayName") or "").lower() in allowed
+        ]
+        history_years = sorted({
+            row.get("season", {}).get("year")
+            for category in relevant_categories
+            for row in category.get("statistics", [])
+            if row.get("season", {}).get("year")
+        }, reverse=True)[:3]
+        latest_history_team = None
+        for category in relevant_categories:
+            rows = sorted(category.get("statistics", []), key=lambda item: item.get("season", {}).get("year", 0), reverse=True)
+            for row_index, row in enumerate(row for row in rows if row.get("season", {}).get("year") in history_years):
+                stats = dict(zip(category.get("names", []), row.get("stats", [])))
+                useful = [
+                    {"name": display, "value": value}
+                    for name, display, value in zip(category.get("names", []), category.get("displayNames", []), row.get("stats", []))
+                    if value not in ("0", "0.0", "--", None)
+                    and not (defensive_line and name not in {"gamesPlayed", "totalTackles", "soloTackles", "assistTackles", "sacks", "stuffs", "forcedFumbles", "fumbleRecoveries"})
+                ]
+                if defensive_line:
+                    for stat in useful:
+                        if stat["name"].lower() == "stuffs":
+                            stat["name"] = "Tackles for Loss (ESPN Stuffs)"
+                team = data.get("teams", {}).get(row.get("teamSlug"), {})
+                team_name = team.get("displayName") or row.get("teamSlug", "").replace("-", " ").title() or "Team unavailable"
+                if row.get("season", {}).get("year") == (history_years[0] if history_years else None):
+                    latest_history_team = latest_history_team or team
+                categories.append({
+                    "name": category.get("displayName"),
+                    "season": row.get("season", {}).get("year"),
+                    "team": team_name,
+                    "stats": useful[:14],
+                })
+                if row_index == 0:
+                    games = self._number(stats.get("gamesPlayed")) or 1
+                    row_position = position or row.get("position")
+                    if row_position == "QB" and stats.get("passingYards"):
+                        projected["passingYards"] = round(self._number(stats["passingYards"]) / games * opponent.get("defensePassYpg", 220) / 220, 1)
+                    if row_position == "RB" and stats.get("rushingYards"):
+                        projected["rushingYards"] = round(self._number(stats["rushingYards"]) / games * opponent.get("defenseRushYpg", 110) / 110, 1)
+                    if row_position in ("WR", "TE", "RB") and stats.get("receivingYards"):
+                        projected["receivingYards"] = round(self._number(stats["receivingYards"]) / games * opponent.get("defensePassYpg", 220) / 220, 1)
+
+        experience_years = athlete.get("experience", {}).get("years")
+        is_rookie = experience_years is not None and experience_years <= 1
+        previous_abbreviation = latest_history_team.get("abbreviation") if latest_history_team else None
+        new_team = bool(previous_abbreviation and team_abbreviation and previous_abbreviation != team_abbreviation)
 
         return {
             "categories": categories,
             "projected": projected,
+            "playerStatus": {
+                "rookie": is_rookie,
+                "newTeam": new_team,
+                "previousTeam": latest_history_team.get("displayName") if new_team else None,
+            },
             "newsLink": f"https://www.espn.com/nfl/player/news/_/id/{athlete_id}",
             "projectionNote": "Projection uses the player's latest season per-game production adjusted by the opponent's 2025 defense.",
         }
