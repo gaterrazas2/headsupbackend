@@ -153,25 +153,31 @@ class NFLManager:
             "color": team.get("color"),
         }
 
-    def _depth_chart(self, team):
+    def _depth_chart(self, team, unavailable_ids=None):
         data = self._json(f'{self.ESPN_SITE}/teams/{team["abbreviation"].lower()}/depthcharts')
         charts = data.get("depthchart", [])
         offense_chart = next((chart for chart in charts if "WR" in chart.get("name", "") or chart.get("name", "").endswith("O")), {})
         defense_chart = next((chart for chart in charts if chart.get("name", "").endswith("D")), {})
         return {
-            "offense": self._starters(offense_chart, team),
-            "defense": self._starters(defense_chart, team),
+            "offense": self._starters(offense_chart, team, unavailable_ids),
+            "defense": self._starters(defense_chart, team, unavailable_ids),
             "offenseScheme": offense_chart.get("name", "Offense"),
             "defenseScheme": defense_chart.get("name", "Defense"),
         }
 
-    def _starters(self, chart, team):
+    def _starters(self, chart, team, unavailable_ids=None):
+        unavailable_ids = unavailable_ids or set()
         starters = []
         for position in (chart.get("positions") or {}).values():
             athletes = position.get("athletes") or []
             if not athletes:
                 continue
-            athlete = athletes[0]
+            athlete = next(
+                (candidate for candidate in athletes if str(candidate.get("id")) not in unavailable_ids),
+                None,
+            )
+            if not athlete:
+                continue
             abbreviation = position.get("position", {}).get("abbreviation", "")
             starters.append({
                 "id": athlete.get("id"),
@@ -194,11 +200,8 @@ class NFLManager:
             source = competitors.get(side, {}).get("team", {})
             teams[side] = self._team_summary(source)
 
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            futures = {side: executor.submit(self._depth_chart, team) for side, team in teams.items()}
-            depth = {side: future.result() for side, future in futures.items()}
-
         injuries = {}
+        unavailable_by_team = defaultdict(set)
         injury_groups = summary.get("injuries", {})
         if isinstance(injury_groups, dict):
             injury_groups = list(injury_groups.values())
@@ -210,6 +213,18 @@ class NFLManager:
                     "type": injury.get("details", {}).get("type"),
                     "detail": injury.get("details", {}).get("detail"),
                 }
+                status = (injury.get("status") or "").lower()
+                status_type = (injury.get("type", {}).get("abbreviation") or "").upper()
+                if status in {"out", "injured reserve", "suspended"} or status_type in {"O", "IR", "SUSP"}:
+                    team_abbreviation = group.get("team", {}).get("abbreviation")
+                    unavailable_by_team[team_abbreviation].add(str(athlete.get("id")))
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = {
+                side: executor.submit(self._depth_chart, team, unavailable_by_team.get(team.get("abbreviation"), set()))
+                for side, team in teams.items()
+            }
+            depth = {side: future.result() for side, future in futures.items()}
 
         for side, team in teams.items():
             team["statistics"] = self._metric_for(team.get("abbreviation"))
