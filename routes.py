@@ -280,6 +280,31 @@ def model_performance():
         return jsonify({"error": "Could not load model performance"}), 500
 
 
+@app.post("/public/mlb/odds")
+@limiter.limit("10 per minute")
+async def public_mlb_odds():
+    try:
+        data = request.get_json(silent=True)
+        if not data:
+            return jsonify({"error": "No data provided"}), 400
+        return jsonify({"response": await backend.getOdds(data)})
+    except Exception as error:
+        print(f"Public MLB odds error: {error}")
+        return jsonify({"error": "Could not calculate MLB odds"}), 500
+
+
+@app.get("/public/mlb/model-performance")
+@limiter.limit("20 per minute")
+def public_mlb_model_performance():
+    try:
+        response = jsonify(backend.get_model_performance())
+        response.headers["Cache-Control"] = "public, max-age=300"
+        return response
+    except Exception as error:
+        print(f"Public model performance error: {error}")
+        return jsonify({"error": "Could not load model performance"}), 500
+
+
 @app.get("/admin/fantasy/status")
 @login_required
 def fantasy_status():
@@ -377,6 +402,45 @@ def nfl_player_detail(athlete_id):
         ))
     except Exception as error:
         print(f"NFL player error: {error}")
+        return jsonify({"error": "Could not load NFL player details"}), 502
+
+
+@app.get("/public/nfl/matchups")
+@limiter.limit("30 per minute")
+def public_nfl_matchups():
+    try:
+        return jsonify(backend.nfl.weekly_matchups())
+    except Exception as error:
+        print(f"Public NFL matchup error: {error}")
+        return jsonify({"error": "Could not load this week's NFL matchups"}), 502
+
+
+@app.get("/public/nfl/matchups/<event_id>")
+@limiter.limit("30 per minute")
+def public_nfl_matchup_detail(event_id):
+    if not event_id.isdigit():
+        return jsonify({"error": "Invalid NFL matchup"}), 400
+    try:
+        return jsonify(backend.nfl.matchup_detail(event_id))
+    except Exception as error:
+        print(f"Public NFL detail error: {error}")
+        return jsonify({"error": "Could not load NFL matchup details"}), 502
+
+
+@app.get("/public/nfl/players/<athlete_id>")
+@limiter.limit("30 per minute")
+def public_nfl_player_detail(athlete_id):
+    if not athlete_id.isdigit():
+        return jsonify({"error": "Invalid NFL player"}), 400
+    try:
+        return jsonify(backend.nfl.player_detail(
+            athlete_id,
+            request.args.get("opponent"),
+            request.args.get("position"),
+            request.args.get("team"),
+        ))
+    except Exception as error:
+        print(f"Public NFL player error: {error}")
         return jsonify({"error": "Could not load NFL player details"}), 502
 
 # Get number of emails added
