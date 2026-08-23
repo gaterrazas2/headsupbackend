@@ -66,16 +66,38 @@ class FantasyManager:
     def _team_name(team):
         return team.get("name") or f'{team.get("location", "")} {team.get("nickname", "")}'.strip() or "My Team"
 
+    @staticmethod
+    def _draft_position(league, team_id):
+        draft_settings = league.get("settings", {}).get("draftSettings", {}) or {}
+        pick_order = draft_settings.get("pickOrder") or []
+        if isinstance(pick_order, dict):
+            pick_order = [team for _, team in sorted(pick_order.items(), key=lambda item: int(item[0]))]
+        normalized_order = [int(value) for value in pick_order if str(value).isdigit()]
+        if int(team_id) in normalized_order:
+            return normalized_order.index(int(team_id)) + 1
+
+        picks = league.get("draftDetail", {}).get("picks", []) or []
+        team_picks = sorted(
+            (pick for pick in picks if int(pick.get("teamId") or -1) == int(team_id)),
+            key=lambda pick: int(pick.get("overallPickNumber") or 9999),
+        )
+        if team_picks:
+            return int(team_picks[0].get("overallPickNumber") or 0) or None
+        return None
+
     def league_options(self):
         options = []
         for key, config in self.LEAGUES.items():
             name = f'League {config["leagueId"]}'
             try:
-                league = self._request_json(f'{self._league_url(config["leagueId"])}?view=mTeam')
-                name = self._team_name(self._owned_team(league))
+                league = self._request_json(f'{self._league_url(config["leagueId"])}?view=mTeam&view=mSettings&view=mDraftDetail')
+                team = self._owned_team(league)
+                name = self._team_name(team)
+                draft_position = self._draft_position(league, team["id"])
             except Exception as error:
                 print(f'Could not load ESPN team name for {config["leagueId"]}: {error}')
-            options.append({"key": key, "leagueId": config["leagueId"], "name": name})
+                draft_position = None
+            options.append({"key": key, "leagueId": config["leagueId"], "name": name, "draftPosition": draft_position})
         return options
 
     def _projection(self, player, week):
@@ -174,7 +196,7 @@ class FantasyManager:
             raise ValueError("ESPN connection is not configured")
 
         league = self._request_json(
-            f'{self._league_url(config["leagueId"])}?view=mTeam&view=mRoster&view=mSettings'
+            f'{self._league_url(config["leagueId"])}?view=mTeam&view=mRoster&view=mSettings&view=mDraftDetail'
         )
         team = self._owned_team(league)
         week = max(int(league.get("scoringPeriodId") or 0), 1)
@@ -345,6 +367,7 @@ class FantasyManager:
             "rankType": rank_type,
             "draftType": draft_settings.get("type", "SNAKE"),
             "draftDate": draft_settings.get("date"),
+            "draftPosition": self._draft_position(league, team["id"]),
             "rosterSize": len(entries),
             "players": recommendations[:30],
         }
