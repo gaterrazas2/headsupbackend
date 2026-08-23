@@ -353,6 +353,18 @@ def fantasy_draft_board(league_key):
         return jsonify({"error": "Could not load ESPN draft rankings"}), 502
 
 
+@app.get("/admin/fantasy/leagues/<league_key>/roster")
+@login_required
+def fantasy_team_roster(league_key):
+    try:
+        return jsonify(backend.fantasy.team_roster(league_key))
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+    except Exception as error:
+        print(f"Fantasy roster error: {error}")
+        return jsonify({"error": "Could not load the ESPN roster"}), 502
+
+
 @app.post("/admin/fantasy/recommendations/<plan_id>/<decision>")
 @login_required
 def review_fantasy_recommendation(plan_id, decision):

@@ -16,7 +16,7 @@ class FantasyManager:
     }
     BENCH_SLOT = 20
     IR_SLOT = 21
-    LINEUP_POSITION_NAMES = {0: "QB", 2: "RB", 4: "WR", 6: "TE", 16: "D/ST", 17: "K"}
+    LINEUP_POSITION_NAMES = {0: "QB", 2: "RB", 4: "WR", 6: "TE", 16: "D/ST", 17: "K", 23: "FLEX"}
     PLAYER_POSITION_NAMES = {1: "QB", 2: "RB", 3: "WR", 4: "TE", 5: "K", 16: "D/ST"}
     POSITION_STARTER_SLOTS = {1: 0, 2: 2, 3: 4, 4: 6, 5: 17, 16: 16}
 
@@ -187,6 +187,29 @@ class FantasyManager:
                 "status": entry.get("status", "FREEAGENT"),
             })
         return agents
+
+    def team_roster(self, league_key):
+        config = self.LEAGUES.get(league_key)
+        if not config:
+            raise ValueError("Unknown fantasy league")
+        if not self.configured():
+            raise ValueError("ESPN connection is not configured")
+        league = self._request_json(
+            f'{self._league_url(config["leagueId"])}?view=mTeam&view=mRoster&view=mSettings'
+        )
+        team = self._owned_team(league)
+        week = max(int(league.get("scoringPeriodId") or 0), 1)
+        players = [self._player(entry, week) for entry in (team.get("roster") or {}).get("entries", [])]
+        for player in players:
+            slot = player["lineupSlotId"]
+            player["lineupSlot"] = self.LINEUP_POSITION_NAMES.get(slot, "IR" if slot == self.IR_SLOT else "Bench")
+        return {
+            "leagueKey": league_key,
+            "teamName": self._team_name(team),
+            "week": int(league.get("scoringPeriodId") or 0),
+            "starters": [player for player in players if player["lineupSlotId"] not in (self.BENCH_SLOT, self.IR_SLOT)],
+            "bench": [player for player in players if player["lineupSlotId"] in (self.BENCH_SLOT, self.IR_SLOT)],
+        }
 
     def build_plan(self, league_key):
         config = self.LEAGUES.get(league_key)
