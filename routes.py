@@ -321,10 +321,7 @@ def public_mlb_model_performance():
 def fantasy_status():
     return jsonify({
         "configured": backend.fantasy.configured(),
-        "leagues": [
-            {"key": key, **config}
-            for key, config in backend.fantasy.LEAGUES.items()
-        ],
+        "leagues": backend.fantasy.league_options() if backend.fantasy.configured() else [],
     })
 
 

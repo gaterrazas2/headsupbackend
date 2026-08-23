@@ -9,9 +9,10 @@ from bson.errors import InvalidId
 
 class FantasyManager:
     LEAGUES = {
-        "cs": {"name": "CS League", "leagueId": 1082498796},
-        "discord": {"name": "Discord League", "leagueId": 788168317},
-        "ai-cheat": {"name": "I'm using AI to cheat", "leagueId": 94545708},
+        "cs": {"leagueId": 1082498796},
+        "discord": {"leagueId": 788168317},
+        "ai-cheat": {"leagueId": 94545708},
+        "league-68092989": {"leagueId": 68092989},
     }
     BENCH_SLOT = 20
     IR_SLOT = 21
@@ -60,6 +61,22 @@ class FantasyManager:
             if any(str(owner or "").strip("{} ").lower() == owner_id for owner in owners):
                 return team
         raise ValueError("No team in this league belongs to the connected ESPN account")
+
+    @staticmethod
+    def _team_name(team):
+        return team.get("name") or f'{team.get("location", "")} {team.get("nickname", "")}'.strip() or "My Team"
+
+    def league_options(self):
+        options = []
+        for key, config in self.LEAGUES.items():
+            name = f'League {config["leagueId"]}'
+            try:
+                league = self._request_json(f'{self._league_url(config["leagueId"])}?view=mTeam')
+                name = self._team_name(self._owned_team(league))
+            except Exception as error:
+                print(f'Could not load ESPN team name for {config["leagueId"]}: {error}')
+            options.append({"key": key, "leagueId": config["leagueId"], "name": name})
+        return options
 
     def _projection(self, player, week):
         projected = [
@@ -163,12 +180,12 @@ class FantasyManager:
         week = max(int(league.get("scoringPeriodId") or 0), 1)
         entries = (team.get("roster") or {}).get("entries", [])
         players = [self._player(entry, week) for entry in entries]
-        team_name = team.get("name") or f'{team.get("location", "")} {team.get("nickname", "")}'.strip()
+        team_name = self._team_name(team)
 
         if not players:
             return {
                 "leagueKey": league_key,
-                "leagueName": config["name"],
+                "leagueName": team_name,
                 "teamName": team_name,
                 "teamId": team["id"],
                 "week": int(league.get("scoringPeriodId") or 0),
@@ -182,7 +199,7 @@ class FantasyManager:
         if not any(player["projectedPoints"] > 0 for player in players):
             return {
                 "leagueKey": league_key,
-                "leagueName": config["name"],
+                "leagueName": team_name,
                 "teamName": team_name,
                 "teamId": team["id"],
                 "week": week,
@@ -234,7 +251,7 @@ class FantasyManager:
 
         return {
             "leagueKey": league_key,
-            "leagueName": config["name"],
+            "leagueName": team_name,
             "teamName": team_name,
             "teamId": team["id"],
             "week": week,
@@ -320,10 +337,10 @@ class FantasyManager:
         recommendations.sort(key=lambda player: (player["recommendationScore"], player["rank"]))
         for player in recommendations:
             player.pop("recommendationScore", None)
-        team_name = team.get("name") or f'{team.get("location", "")} {team.get("nickname", "")}'.strip()
+        team_name = self._team_name(team)
         draft_settings = league.get("settings", {}).get("draftSettings", {})
         return {
-            "leagueName": config["name"],
+            "leagueName": team_name,
             "teamName": team_name,
             "rankType": rank_type,
             "draftType": draft_settings.get("type", "SNAKE"),
