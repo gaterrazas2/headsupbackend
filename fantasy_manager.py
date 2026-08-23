@@ -11,6 +11,7 @@ class FantasyManager:
     LEAGUES = {
         "cs": {"name": "CS League", "leagueId": 1082498796},
         "discord": {"name": "Discord League", "leagueId": 788168317},
+        "ai-cheat": {"name": "I'm using AI to cheat", "leagueId": 94545708},
     }
     BENCH_SLOT = 20
     IR_SLOT = 21
