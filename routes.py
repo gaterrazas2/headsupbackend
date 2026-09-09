@@ -68,14 +68,6 @@ def require_csrf():
     return None
 
 
-def require_betting_access(kind):
-    supplied = request.headers.get("X-Betting-Access", "")
-    expected = os.getenv(f"{kind.upper()}_BETTING_ACCESS", "")
-    if not expected or not secrets.compare_digest(supplied, expected):
-        return jsonify({"error": "This betting link is no longer authorized"}), 403
-    return None
-
-
 @app.get("/auth/csrf")
 def get_csrf():
     return jsonify({"csrfToken": csrf_token()})
@@ -302,9 +294,6 @@ def model_performance():
 @app.post("/public/mlb/odds")
 @limiter.limit("10 per minute")
 async def public_mlb_odds():
-    access_error = require_betting_access("mlb")
-    if access_error:
-        return access_error
     try:
         data = request.get_json(silent=True)
         if not data:
@@ -318,9 +307,6 @@ async def public_mlb_odds():
 @app.get("/public/mlb/model-performance")
 @limiter.limit("20 per minute")
 def public_mlb_model_performance():
-    access_error = require_betting_access("mlb")
-    if access_error:
-        return access_error
     try:
         response = jsonify(backend.get_model_performance())
         response.headers["Cache-Control"] = "public, max-age=300"
@@ -444,9 +430,6 @@ def nfl_player_detail(athlete_id):
 @app.get("/public/nfl/matchups")
 @limiter.limit("30 per minute")
 def public_nfl_matchups():
-    access_error = require_betting_access("nfl")
-    if access_error:
-        return access_error
     try:
         return jsonify(backend.nfl.weekly_matchups())
     except Exception as error:
@@ -457,9 +440,6 @@ def public_nfl_matchups():
 @app.get("/public/nfl/matchups/<event_id>")
 @limiter.limit("30 per minute")
 def public_nfl_matchup_detail(event_id):
-    access_error = require_betting_access("nfl")
-    if access_error:
-        return access_error
     if not event_id.isdigit():
         return jsonify({"error": "Invalid NFL matchup"}), 400
     try:
@@ -472,9 +452,6 @@ def public_nfl_matchup_detail(event_id):
 @app.get("/public/nfl/players/<athlete_id>")
 @limiter.limit("30 per minute")
 def public_nfl_player_detail(athlete_id):
-    access_error = require_betting_access("nfl")
-    if access_error:
-        return access_error
     if not athlete_id.isdigit():
         return jsonify({"error": "Invalid NFL player"}), 400
     try:
