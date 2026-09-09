@@ -387,7 +387,7 @@ class NFLManager:
             "QB": {"passing", "rushing"},
             "RB": {"rushing", "receiving"},
             "FB": {"rushing", "receiving"},
-            "WR": {"receiving", "rushing"},
+            "WR": {"receiving"},
             "TE": {"receiving"},
             "K": {"kicking"},
             "PK": {"kicking"},
@@ -421,6 +421,18 @@ class NFLManager:
                     if value not in ("0", "0.0", "--", None)
                     and not (defensive_line and name not in {"gamesPlayed", "totalTackles", "soloTackles", "assistTackles", "sacks", "stuffs", "forcedFumbles", "fumbleRecoveries"})
                 ]
+                games_played = self._number(stats.get("gamesPlayed"))
+                category_name = (category.get("name") or category.get("displayName") or "").lower()
+                per_game_stat = None
+                if games_played:
+                    if category_name == "passing" and position == "QB" and self._number(stats.get("passingYards")):
+                        per_game_stat = {"name": "Passing Yards Per Game", "value": round(self._number(stats["passingYards"]) / games_played, 1)}
+                    elif category_name == "rushing" and position in {"QB", "RB", "FB"} and self._number(stats.get("rushingYards")):
+                        per_game_stat = {"name": "Rushing Yards Per Game", "value": round(self._number(stats["rushingYards"]) / games_played, 1)}
+                    elif category_name == "receiving" and position in {"RB", "FB", "WR", "TE"} and self._number(stats.get("receivingYards")):
+                        per_game_stat = {"name": "Receiving Yards Per Game", "value": round(self._number(stats["receivingYards"]) / games_played, 1)}
+                if per_game_stat:
+                    useful.insert(1 if useful and useful[0]["name"] == "Games Played" else 0, per_game_stat)
                 if defensive_line:
                     for stat in useful:
                         if stat["name"].lower() == "stuffs":
