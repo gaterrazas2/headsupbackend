@@ -370,19 +370,6 @@ class NFLManager:
     def _defensive_line_production(self, athlete_id):
         if not athlete_id:
             return {"sacks": 0.0, "tacklesForLoss": 0.0, "games": 0.0}
-
-    def _matchup_production(self, athlete_id, category_name, stat_names):
-        if not athlete_id:
-            return {name: 0.0 for name in stat_names}
-        try:
-            data = self._json(f"{self.ESPN_WEB}/athletes/{athlete_id}/stats?region=us&lang=en&contentorigin=espn")
-            category = next((item for item in data.get("categories", []) if (item.get("name") or "").lower() == category_name), {})
-            row = max(category.get("statistics", []), key=lambda item: item.get("season", {}).get("year", 0), default={})
-            stats = dict(zip(category.get("names", []), row.get("stats", [])))
-            return {name: self._number(stats.get(name)) for name in stat_names}
-        except Exception as error:
-            print(f"Could not load matchup production for {athlete_id}: {error}")
-            return {name: 0.0 for name in stat_names}
         try:
             data = self._json(f"{self.ESPN_WEB}/athletes/{athlete_id}/stats?region=us&lang=en&contentorigin=espn")
             defensive = next((category for category in data.get("categories", []) if (category.get("name") or "").lower() == "defensive"), {})
@@ -396,6 +383,19 @@ class NFLManager:
         except Exception as error:
             print(f"Could not load line production for {athlete_id}: {error}")
             return {"sacks": 0.0, "tacklesForLoss": 0.0, "games": 0.0}
+
+    def _matchup_production(self, athlete_id, category_name, stat_names):
+        if not athlete_id:
+            return {name: 0.0 for name in stat_names}
+        try:
+            data = self._json(f"{self.ESPN_WEB}/athletes/{athlete_id}/stats?region=us&lang=en&contentorigin=espn")
+            category = next((item for item in data.get("categories", []) if (item.get("name") or "").lower() == category_name), {})
+            row = max(category.get("statistics", []), key=lambda item: item.get("season", {}).get("year", 0), default={})
+            stats = dict(zip(category.get("names", []), row.get("stats", [])))
+            return {name: self._number(stats.get(name)) for name in stat_names}
+        except Exception as error:
+            print(f"Could not load matchup production for {athlete_id}: {error}")
+            return {name: 0.0 for name in stat_names}
 
     def player_detail(self, athlete_id, opponent_abbreviation=None, position=None, team_abbreviation=None, defender_name=None, defender_position=None, matchup_player_id=None):
         try:
