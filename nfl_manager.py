@@ -502,19 +502,21 @@ class NFLManager:
             print(f"Could not load matchup production for {athlete_id}: {error}")
             return {name: 0.0 for name in stat_names}
 
-    def _receiver_corner_evaluation(self, receiver_id, corner_id, defense_abbreviation):
+    def _receiver_corner_evaluation(self, receiver_id, defender_id, defense_abbreviation, receiver_position="WR"):
         receiver = self._matchup_production(receiver_id, "receiving", ["receptions", "receivingTargets", "receivingYards", "gamesPlayed"])
-        corner = self._matchup_production(corner_id, "defensive", ["interceptions", "passesDefended", "gamesPlayed"])
+        defender = self._matchup_production(defender_id, "defensive", ["interceptions", "passesDefended", "gamesPlayed"])
         defense = self._metric_for(defense_abbreviation) if defense_abbreviation else {}
         receiver_games = receiver["gamesPlayed"] or 1
         receptions_per_game = receiver["receptions"] / receiver_games
         targets_per_game = receiver["receivingTargets"] / receiver_games
         yards_per_game = receiver["receivingYards"] / receiver_games
+        baselines = {"WR": (4.5, 6.5, 55), "TE": (3.5, 5.0, 40), "RB": (2.5, 3.5, 25)}
+        baseline_receptions, baseline_targets, baseline_yards = baselines.get(receiver_position, baselines["WR"])
         receiver_score = 50
-        receiver_score += (receptions_per_game - 4.5) * 4.0
-        receiver_score += (targets_per_game - 6.5) * 1.8
-        receiver_score += (yards_per_game - 55) * 0.10
-        receiver_score -= corner["interceptions"] * 2.0 + corner["passesDefended"] * 0.5
+        receiver_score += (receptions_per_game - baseline_receptions) * 4.0
+        receiver_score += (targets_per_game - baseline_targets) * 1.8
+        receiver_score += (yards_per_game - baseline_yards) * 0.10
+        receiver_score -= defender["interceptions"] * 2.0 + defender["passesDefended"] * 0.5
         receiver_score += (self._number(defense.get("defensePassYpg")) - 220) * 0.12 if defense.get("defensePassYpg") else 0
         receiver_score += (self._number(defense.get("defensePassRank")) - 16.5) * 0.65 if defense.get("defensePassRank") else 0
         return {
@@ -522,8 +524,8 @@ class NFLManager:
             "receptionsPerGame": round(receptions_per_game, 1),
             "targetsPerGame": round(targets_per_game, 1),
             "yardsPerGame": round(yards_per_game, 1),
-            "interceptions": corner["interceptions"],
-            "passesDefended": corner["passesDefended"],
+            "interceptions": defender["interceptions"],
+            "passesDefended": defender["passesDefended"],
         }
 
     def player_detail(self, athlete_id, opponent_abbreviation=None, position=None, team_abbreviation=None, defender_name=None, defender_position=None, matchup_player_id=None):
@@ -652,15 +654,18 @@ class NFLManager:
         categories.sort(key=lambda category: category.get("season") or 0, reverse=True)
 
         if position == "WR" and receiving_matchup and matchup_player_id:
-            shared_matchup = self._receiver_corner_evaluation(athlete_id, matchup_player_id, opponent_abbreviation)
+            shared_matchup = self._receiver_corner_evaluation(athlete_id, matchup_player_id, opponent_abbreviation, position)
             receiver_score = shared_matchup["receiverScore"]
             corner_score = 100 - receiver_score
-            advantage = "Receiver advantage" if receiver_score >= 56 else "Corner advantage" if receiver_score <= 44 else "Even matchup"
+            defender_role = "Safety" if defender_position in {"S", "FS", "SS"} else "Corner"
+            advantage = "Receiver advantage" if receiver_score >= 56 else f"{defender_role} advantage" if receiver_score <= 44 else "Even matchup"
             receiving_matchup.update({
                 "score": receiver_score,
                 "matchupScore": receiver_score,
                 "receiverScore": receiver_score,
                 "cornerScore": corner_score,
+                "defenderScore": corner_score,
+                "defenderRole": defender_role,
                 "advantage": advantage,
                 "grade": "Great" if receiver_score >= 75 else "Good" if receiver_score >= 60 else "Average" if receiver_score >= 45 else "Difficult",
                 "receptionsPerGame": shared_matchup["receptionsPerGame"],
@@ -668,11 +673,13 @@ class NFLManager:
                 "receivingYardsPerGame": shared_matchup["yardsPerGame"],
             })
 
-        if position in {"CB", "LCB", "RCB", "NB", "DB"} and matchup_player_id:
-            shared_matchup = self._receiver_corner_evaluation(matchup_player_id, athlete_id, team_abbreviation)
+        if position in {"CB", "LCB", "RCB", "NB", "DB", "S", "FS", "SS"} and matchup_player_id:
+            receiver_position = (defender_position or "WR").upper()
+            shared_matchup = self._receiver_corner_evaluation(matchup_player_id, athlete_id, team_abbreviation, receiver_position)
             receiver_score = shared_matchup["receiverScore"]
             corner_score = 100 - receiver_score
-            advantage = "Receiver advantage" if receiver_score >= 56 else "Corner advantage" if receiver_score <= 44 else "Even matchup"
+            defender_role = "Safety" if position in {"S", "FS", "SS"} else "Corner"
+            advantage = "Receiver advantage" if receiver_score >= 56 else f"{defender_role} advantage" if receiver_score <= 44 else "Even matchup"
             coverage_matchup = {
                 "receiver": defender_name or "Opposing receiver",
                 "receiverPosition": defender_position,
@@ -680,6 +687,8 @@ class NFLManager:
                 "matchupScore": receiver_score,
                 "receiverScore": receiver_score,
                 "cornerScore": corner_score,
+                "defenderScore": corner_score,
+                "defenderRole": defender_role,
                 "advantage": advantage,
                 "grade": "Great" if corner_score >= 75 else "Good" if corner_score >= 60 else "Average" if corner_score >= 45 else "Difficult",
                 "receiverReceptionsPerGame": shared_matchup["receptionsPerGame"],
