@@ -548,9 +548,16 @@ class NFLManager:
 
         if position == "WR" and receiving_matchup and matchup_player_id:
             shared_matchup = self._receiver_corner_evaluation(athlete_id, matchup_player_id, opponent_abbreviation)
+            receiver_score = shared_matchup["receiverScore"]
+            corner_score = 100 - receiver_score
+            advantage = "Receiver advantage" if receiver_score >= 56 else "Corner advantage" if receiver_score <= 44 else "Even matchup"
             receiving_matchup.update({
-                "score": shared_matchup["receiverScore"],
-                "grade": "Great" if shared_matchup["receiverScore"] >= 75 else "Good" if shared_matchup["receiverScore"] >= 60 else "Average" if shared_matchup["receiverScore"] >= 45 else "Difficult",
+                "score": receiver_score,
+                "matchupScore": receiver_score,
+                "receiverScore": receiver_score,
+                "cornerScore": corner_score,
+                "advantage": advantage,
+                "grade": "Great" if receiver_score >= 75 else "Good" if receiver_score >= 60 else "Average" if receiver_score >= 45 else "Difficult",
                 "receptionsPerGame": shared_matchup["receptionsPerGame"],
                 "targetsPerGame": shared_matchup["targetsPerGame"],
                 "receivingYardsPerGame": shared_matchup["yardsPerGame"],
@@ -558,12 +565,18 @@ class NFLManager:
 
         if position in {"CB", "LCB", "RCB", "NB", "DB"} and matchup_player_id:
             shared_matchup = self._receiver_corner_evaluation(matchup_player_id, athlete_id, team_abbreviation)
-            score = 100 - shared_matchup["receiverScore"]
+            receiver_score = shared_matchup["receiverScore"]
+            corner_score = 100 - receiver_score
+            advantage = "Receiver advantage" if receiver_score >= 56 else "Corner advantage" if receiver_score <= 44 else "Even matchup"
             coverage_matchup = {
                 "receiver": defender_name or "Opposing receiver",
                 "receiverPosition": defender_position,
-                "score": score,
-                "grade": "Great" if score >= 75 else "Good" if score >= 60 else "Average" if score >= 45 else "Difficult",
+                "score": receiver_score,
+                "matchupScore": receiver_score,
+                "receiverScore": receiver_score,
+                "cornerScore": corner_score,
+                "advantage": advantage,
+                "grade": "Great" if corner_score >= 75 else "Good" if corner_score >= 60 else "Average" if corner_score >= 45 else "Difficult",
                 "receiverReceptionsPerGame": shared_matchup["receptionsPerGame"],
                 "receiverTargetsPerGame": shared_matchup["targetsPerGame"],
                 "receiverYardsPerGame": shared_matchup["yardsPerGame"],
