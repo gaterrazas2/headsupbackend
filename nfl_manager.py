@@ -367,7 +367,24 @@ class NFLManager:
                     return stat.get("displayValue") or stat.get("value") or "Not available"
         return "Not available"
 
-    def player_detail(self, athlete_id, opponent_abbreviation=None, position=None, team_abbreviation=None, defender_name=None, defender_position=None):
+    def _defensive_line_production(self, athlete_id):
+        if not athlete_id:
+            return {"sacks": 0.0, "tacklesForLoss": 0.0, "games": 0.0}
+        try:
+            data = self._json(f"{self.ESPN_WEB}/athletes/{athlete_id}/stats?region=us&lang=en&contentorigin=espn")
+            defensive = next((category for category in data.get("categories", []) if (category.get("name") or "").lower() == "defensive"), {})
+            row = max(defensive.get("statistics", []), key=lambda item: item.get("season", {}).get("year", 0), default={})
+            stats = dict(zip(defensive.get("names", []), row.get("stats", [])))
+            return {
+                "sacks": self._number(stats.get("sacks")),
+                "tacklesForLoss": self._number(stats.get("stuffs")),
+                "games": self._number(stats.get("gamesPlayed")),
+            }
+        except Exception as error:
+            print(f"Could not load line production for {athlete_id}: {error}")
+            return {"sacks": 0.0, "tacklesForLoss": 0.0, "games": 0.0}
+
+    def player_detail(self, athlete_id, opponent_abbreviation=None, position=None, team_abbreviation=None, defender_name=None, defender_position=None, matchup_player_id=None):
         try:
             data = self._json(f"{self.ESPN_WEB}/athletes/{athlete_id}/stats?region=us&lang=en&contentorigin=espn")
         except HTTPError as error:
@@ -378,9 +395,11 @@ class NFLManager:
         categories = []
         projected = {}
         receiving_matchup = None
+        line_matchup = None
         opponent = self._metric_for(opponent_abbreviation) if opponent_abbreviation else {}
         position = (position or "").upper()
         defensive_line = position in {"DE", "LDE", "RDE", "LE", "RE", "DT", "LDT", "RDT", "NT", "DL"} or position.endswith(("DE", "DT"))
+        offensive_line = position in {"LT", "LG", "C", "RG", "RT", "OL", "OT", "OG"}
         defensive_back = position in {"CB", "LCB", "RCB", "NB", "DB", "S", "FS", "SS"} or position.endswith(("CB", "S"))
         linebacker = position in {"LB", "ILB", "OLB", "MLB", "LILB", "RILB", "WLB", "SLB"} or position.endswith("LB")
         allowed_categories = {
@@ -489,10 +508,39 @@ class NFLManager:
         new_team = bool(previous_abbreviation and team_abbreviation and previous_abbreviation != team_abbreviation)
         categories.sort(key=lambda category: category.get("season") or 0, reverse=True)
 
+        if offensive_line or defensive_line:
+            if offensive_line:
+                opposing_production = self._defensive_line_production(matchup_player_id)
+                team_sacks = self._number(self._team_sacks_allowed(team_abbreviation))
+                score = 65
+                score -= opposing_production["sacks"] * 2.0
+                score -= opposing_production["tacklesForLoss"] * 0.45
+                score += (opponent.get("defensePassRank", 16.5) - 16.5) * 0.7
+                score += (32 - team_sacks) * 0.35
+                basis = {**opposing_production, "teamSacksAllowed": team_sacks, "opponentPassRank": opponent.get("defensePassRank")}
+            else:
+                own_production = self._defensive_line_production(athlete_id)
+                opponent_sacks = self._number(self._team_sacks_allowed(opponent_abbreviation))
+                score = 45
+                score += own_production["sacks"] * 2.0
+                score += own_production["tacklesForLoss"] * 0.45
+                score += (opponent_sacks - 32) * 0.4
+                basis = {**own_production, "opponentSacksAllowed": opponent_sacks}
+            score = round(max(1, min(99, score)))
+            line_matchup = {
+                "opponent": defender_name or "Opposing lineman",
+                "opponentPosition": defender_position,
+                "score": score,
+                "grade": "Great" if score >= 75 else "Good" if score >= 60 else "Average" if score >= 45 else "Difficult",
+                "side": "offense" if offensive_line else "defense",
+                "basis": basis,
+            }
+
         return {
             "categories": categories,
             "projected": projected,
             "receivingMatchup": receiving_matchup,
+            "lineMatchup": line_matchup,
             "playerStatus": {
                 "rookie": is_rookie,
                 "newTeam": new_team,

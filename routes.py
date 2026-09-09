@@ -409,6 +409,7 @@ def nfl_player_detail(athlete_id):
             request.args.get("team"),
             request.args.get("defender"),
             request.args.get("defenderPosition"),
+            request.args.get("matchupId"),
         ))
     except Exception as error:
         print(f"NFL player error: {error}")
@@ -450,6 +451,7 @@ def public_nfl_player_detail(athlete_id):
             request.args.get("team"),
             request.args.get("defender"),
             request.args.get("defenderPosition"),
+            request.args.get("matchupId"),
         ))
     except Exception as error:
         print(f"Public NFL player error: {error}")
