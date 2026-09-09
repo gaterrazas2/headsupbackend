@@ -367,7 +367,7 @@ class NFLManager:
                     return stat.get("displayValue") or stat.get("value") or "Not available"
         return "Not available"
 
-    def player_detail(self, athlete_id, opponent_abbreviation=None, position=None, team_abbreviation=None):
+    def player_detail(self, athlete_id, opponent_abbreviation=None, position=None, team_abbreviation=None, defender_name=None, defender_position=None):
         try:
             data = self._json(f"{self.ESPN_WEB}/athletes/{athlete_id}/stats?region=us&lang=en&contentorigin=espn")
         except HTTPError as error:
@@ -377,6 +377,7 @@ class NFLManager:
         athlete = self._json(f"https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/athletes/{athlete_id}?lang=en&region=us")
         categories = []
         projected = {}
+        receiving_matchup = None
         opponent = self._metric_for(opponent_abbreviation) if opponent_abbreviation else {}
         position = (position or "").upper()
         defensive_line = position in {"DE", "LDE", "RDE", "LE", "RE", "DT", "LDT", "RDT", "NT", "DL"} or position.endswith(("DE", "DT"))
@@ -443,6 +444,32 @@ class NFLManager:
                         projected["rushingYards"] = round(self._number(stats["rushingYards"]) / games * opponent.get("defenseRushYpg", 110) / 110, 1)
                     if row_position in ("WR", "TE", "RB") and stats.get("receivingYards"):
                         projected["receivingYards"] = round(self._number(stats["receivingYards"]) / games * opponent.get("defensePassYpg", 220) / 220, 1)
+                    if row_position in ("WR", "RB") and stats.get("receptions"):
+                        receptions_per_game = self._number(stats["receptions"]) / games
+                        targets_per_game = self._number(stats.get("receivingTargets")) / games
+                        receiving_yards_per_game = self._number(stats.get("receivingYards")) / games
+                        opponent_factor = max(0.75, min(1.30, opponent.get("defensePassYpg", 220) / 220))
+                        projected["receptions"] = round(receptions_per_game * opponent_factor, 1)
+                        baseline_receptions = 4.5 if row_position == "WR" else 2.5
+                        baseline_yards = 55 if row_position == "WR" else 25
+                        matchup_score = 50
+                        matchup_score += (receptions_per_game - baseline_receptions) * 4.0
+                        matchup_score += (targets_per_game - baseline_receptions * 1.45) * 1.8
+                        matchup_score += (receiving_yards_per_game - baseline_yards) * 0.10
+                        matchup_score += (opponent.get("defensePassYpg", 220) - 220) * 0.12
+                        matchup_score += (16.5 - opponent.get("defensePassRank", 16.5)) * 0.65
+                        score = round(max(1, min(99, matchup_score)))
+                        receiving_matchup = {
+                            "defender": defender_name or f"{opponent_abbreviation or 'Opponent'} coverage unit",
+                            "defenderPosition": defender_position,
+                            "score": score,
+                            "grade": "Great" if score >= 75 else "Good" if score >= 60 else "Average" if score >= 45 else "Difficult",
+                            "opponentPassRank": opponent.get("defensePassRank"),
+                            "opponentPassYpg": opponent.get("defensePassYpg"),
+                            "receptionsPerGame": round(receptions_per_game, 1),
+                            "targetsPerGame": round(targets_per_game, 1),
+                            "receivingYardsPerGame": round(receiving_yards_per_game, 1),
+                        }
 
         experience_years = athlete.get("experience", {}).get("years")
         is_rookie = experience_years is not None and experience_years <= 1
@@ -453,6 +480,7 @@ class NFLManager:
         return {
             "categories": categories,
             "projected": projected,
+            "receivingMatchup": receiving_matchup,
             "playerStatus": {
                 "rookie": is_rookie,
                 "newTeam": new_team,
