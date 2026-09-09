@@ -370,6 +370,19 @@ class NFLManager:
     def _defensive_line_production(self, athlete_id):
         if not athlete_id:
             return {"sacks": 0.0, "tacklesForLoss": 0.0, "games": 0.0}
+
+    def _matchup_production(self, athlete_id, category_name, stat_names):
+        if not athlete_id:
+            return {name: 0.0 for name in stat_names}
+        try:
+            data = self._json(f"{self.ESPN_WEB}/athletes/{athlete_id}/stats?region=us&lang=en&contentorigin=espn")
+            category = next((item for item in data.get("categories", []) if (item.get("name") or "").lower() == category_name), {})
+            row = max(category.get("statistics", []), key=lambda item: item.get("season", {}).get("year", 0), default={})
+            stats = dict(zip(category.get("names", []), row.get("stats", [])))
+            return {name: self._number(stats.get(name)) for name in stat_names}
+        except Exception as error:
+            print(f"Could not load matchup production for {athlete_id}: {error}")
+            return {name: 0.0 for name in stat_names}
         try:
             data = self._json(f"{self.ESPN_WEB}/athletes/{athlete_id}/stats?region=us&lang=en&contentorigin=espn")
             defensive = next((category for category in data.get("categories", []) if (category.get("name") or "").lower() == "defensive"), {})
@@ -396,6 +409,7 @@ class NFLManager:
         projected = {}
         receiving_matchup = None
         line_matchup = None
+        coverage_matchup = None
         opponent = self._metric_for(opponent_abbreviation) if opponent_abbreviation else {}
         position = (position or "").upper()
         defensive_line = position in {"DE", "LDE", "RDE", "LE", "RE", "DT", "LDT", "RDT", "NT", "DL"} or position.endswith(("DE", "DT"))
@@ -508,6 +522,32 @@ class NFLManager:
         new_team = bool(previous_abbreviation and team_abbreviation and previous_abbreviation != team_abbreviation)
         categories.sort(key=lambda category: category.get("season") or 0, reverse=True)
 
+        if position in {"CB", "LCB", "RCB", "NB", "DB"} and matchup_player_id:
+            corner = self._matchup_production(athlete_id, "defensive", ["interceptions", "passesDefended", "gamesPlayed"])
+            receiver = self._matchup_production(matchup_player_id, "receiving", ["receptions", "receivingTargets", "receivingYards", "gamesPlayed"])
+            receiver_games = receiver["gamesPlayed"] or 1
+            receptions_per_game = receiver["receptions"] / receiver_games
+            targets_per_game = receiver["receivingTargets"] / receiver_games
+            yards_per_game = receiver["receivingYards"] / receiver_games
+            score = 55
+            score += corner["interceptions"] * 3.5 + corner["passesDefended"] * 0.8
+            score -= (receptions_per_game - 4.5) * 3
+            score -= (targets_per_game - 6.5) * 1.2
+            score -= (yards_per_game - 55) * 0.12
+            score += (self._number(opponent.get("offensePassRank")) - 16.5) * 0.6 if opponent.get("offensePassRank") else 0
+            score = round(max(1, min(99, score)))
+            coverage_matchup = {
+                "receiver": defender_name or "Opposing receiver",
+                "receiverPosition": defender_position,
+                "score": score,
+                "grade": "Great" if score >= 75 else "Good" if score >= 60 else "Average" if score >= 45 else "Difficult",
+                "receiverReceptionsPerGame": round(receptions_per_game, 1),
+                "receiverTargetsPerGame": round(targets_per_game, 1),
+                "receiverYardsPerGame": round(yards_per_game, 1),
+                "interceptions": corner["interceptions"],
+                "passesDefended": corner["passesDefended"],
+            }
+
         if offensive_line or defensive_line:
             if offensive_line:
                 opposing_production = self._defensive_line_production(matchup_player_id)
@@ -540,6 +580,7 @@ class NFLManager:
             "categories": categories,
             "projected": projected,
             "receivingMatchup": receiving_matchup,
+            "coverageMatchup": coverage_matchup,
             "lineMatchup": line_matchup,
             "playerStatus": {
                 "rookie": is_rookie,
