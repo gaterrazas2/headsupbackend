@@ -18,7 +18,6 @@ class FantasyManager:
     IR_SLOT = 21
     LINEUP_POSITION_NAMES = {0: "QB", 2: "RB", 4: "WR", 6: "TE", 16: "D/ST", 17: "K", 23: "FLEX"}
     PLAYER_POSITION_NAMES = {1: "QB", 2: "RB", 3: "WR", 4: "TE", 5: "K", 16: "D/ST"}
-    POSITION_STARTER_SLOTS = {1: 0, 2: 2, 3: 4, 4: 6, 5: 17, 16: 16}
 
     def __init__(self, recommendations_collection):
         self.recommendations = recommendations_collection
@@ -66,38 +65,17 @@ class FantasyManager:
     def _team_name(team):
         return team.get("name") or f'{team.get("location", "")} {team.get("nickname", "")}'.strip() or "My Team"
 
-    @staticmethod
-    def _draft_position(league, team_id):
-        draft_settings = league.get("settings", {}).get("draftSettings", {}) or {}
-        pick_order = draft_settings.get("pickOrder") or []
-        if isinstance(pick_order, dict):
-            pick_order = [team for _, team in sorted(pick_order.items(), key=lambda item: int(item[0]))]
-        normalized_order = [int(value) for value in pick_order if str(value).isdigit()]
-        if int(team_id) in normalized_order:
-            return normalized_order.index(int(team_id)) + 1
-
-        picks = league.get("draftDetail", {}).get("picks", []) or []
-        team_picks = sorted(
-            (pick for pick in picks if int(pick.get("teamId") or -1) == int(team_id)),
-            key=lambda pick: int(pick.get("overallPickNumber") or 9999),
-        )
-        if team_picks:
-            return int(team_picks[0].get("overallPickNumber") or 0) or None
-        return None
-
     def league_options(self):
         options = []
         for key, config in self.LEAGUES.items():
             name = f'League {config["leagueId"]}'
             try:
-                league = self._request_json(f'{self._league_url(config["leagueId"])}?view=mTeam&view=mSettings&view=mDraftDetail')
+                league = self._request_json(f'{self._league_url(config["leagueId"])}?view=mTeam')
                 team = self._owned_team(league)
                 name = self._team_name(team)
-                draft_position = self._draft_position(league, team["id"])
             except Exception as error:
                 print(f'Could not load ESPN team name for {config["leagueId"]}: {error}')
-                draft_position = None
-            options.append({"key": key, "leagueId": config["leagueId"], "name": name, "draftPosition": draft_position})
+            options.append({"key": key, "leagueId": config["leagueId"], "name": name})
         return options
 
     def _projection(self, player, week):
@@ -219,7 +197,7 @@ class FantasyManager:
             raise ValueError("ESPN connection is not configured")
 
         league = self._request_json(
-            f'{self._league_url(config["leagueId"])}?view=mTeam&view=mRoster&view=mSettings&view=mDraftDetail'
+            f'{self._league_url(config["leagueId"])}?view=mTeam&view=mRoster&view=mSettings'
         )
         team = self._owned_team(league)
         week = max(int(league.get("scoringPeriodId") or 0), 1)
@@ -305,94 +283,6 @@ class FantasyManager:
             "lineupMoves": lineup_moves,
             "addDropMoves": add_drop_moves,
             "roster": players,
-        }
-
-    def draft_board(self, league_key):
-        config = self.LEAGUES.get(league_key)
-        if not config:
-            raise ValueError("Unknown fantasy league")
-        if not self.configured():
-            raise ValueError("ESPN connection is not configured")
-
-        league = self._request_json(
-            f'{self._league_url(config["leagueId"])}?view=mTeam&view=mRoster&view=mSettings'
-        )
-        team = self._owned_team(league)
-        entries = (team.get("roster") or {}).get("entries", [])
-        roster_counts = {}
-        for entry in entries:
-            position_id = (entry.get("playerPoolEntry") or {}).get("player", {}).get("defaultPositionId")
-            roster_counts[position_id] = roster_counts.get(position_id, 0) + 1
-
-        scoring_items = league.get("settings", {}).get("scoringSettings", {}).get("scoringItems", [])
-        reception_points = next(
-            (float(item.get("points", 0)) for item in scoring_items if item.get("statId") == 53),
-            0,
-        )
-        rank_type = "PPR" if reception_points >= 0.5 else "STANDARD"
-        fantasy_filter = {
-            "players": {
-                "filterStatus": {"value": ["FREEAGENT", "WAIVERS"]},
-                "filterSlotIds": {"value": list(self.LINEUP_POSITION_NAMES)},
-                "limit": 100,
-                "sortDraftRanks": {"sortPriority": 1, "sortAsc": True, "value": rank_type},
-            }
-        }
-        available = self._request_json(
-            f'{self._league_url(config["leagueId"])}?view=kona_player_info',
-            headers={"X-Fantasy-Filter": json.dumps(fantasy_filter)},
-        ).get("players", [])
-
-        slot_counts = league.get("settings", {}).get("rosterSettings", {}).get("lineupSlotCounts", {})
-        recommendations = []
-        for entry in available:
-            player = entry.get("player", {})
-            position_id = player.get("defaultPositionId")
-            if position_id not in self.PLAYER_POSITION_NAMES:
-                continue
-            rank_data = (player.get("draftRanksByRankType") or {}).get(rank_type, {})
-            rank = rank_data.get("rank")
-            if not rank:
-                continue
-            starter_slot = self.POSITION_STARTER_SLOTS.get(position_id)
-            starter_target = int(slot_counts.get(str(starter_slot), 0)) if starter_slot is not None else 0
-            current_count = roster_counts.get(position_id, 0)
-            needs_starter = position_id not in (5, 16) and current_count < starter_target
-            ownership = player.get("ownership", {}) or {}
-            season_projection = self._projection(player, 1)
-            reason = "Best player available by ESPN draft rank"
-            if needs_starter:
-                reason = f'Fills a starting {self.PLAYER_POSITION_NAMES[position_id]} need'
-            elif current_count:
-                reason = f'Adds depth at {self.PLAYER_POSITION_NAMES[position_id]}'
-            recommendations.append({
-                "playerId": player.get("id"),
-                "name": player.get("fullName", "Unknown player"),
-                "position": self.PLAYER_POSITION_NAMES[position_id],
-                "rank": int(rank),
-                "adp": round(float(ownership.get("averageDraftPosition") or 0), 1),
-                "auctionValue": rank_data.get("auctionValue"),
-                "projectedPoints": season_projection,
-                "injuryStatus": player.get("injuryStatus", "ACTIVE"),
-                "reason": reason,
-                "needsStarter": needs_starter,
-                "recommendationScore": int(rank) - (8 if entries and needs_starter else 0),
-            })
-
-        recommendations.sort(key=lambda player: (player["recommendationScore"], player["rank"]))
-        for player in recommendations:
-            player.pop("recommendationScore", None)
-        team_name = self._team_name(team)
-        draft_settings = league.get("settings", {}).get("draftSettings", {})
-        return {
-            "leagueName": team_name,
-            "teamName": team_name,
-            "rankType": rank_type,
-            "draftType": draft_settings.get("type", "SNAKE"),
-            "draftDate": draft_settings.get("date"),
-            "draftPosition": self._draft_position(league, team["id"]),
-            "rosterSize": len(entries),
-            "players": recommendations[:30],
         }
 
     def save_plan(self, plan):
