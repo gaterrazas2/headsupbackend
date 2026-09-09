@@ -396,6 +396,18 @@ def nfl_matchup_detail(event_id):
         return jsonify({"error": "Could not load NFL matchup details"}), 502
 
 
+@app.get("/admin/nfl/matchups/<event_id>/probability")
+@login_required
+def nfl_matchup_probability(event_id):
+    if not event_id.isdigit():
+        return jsonify({"error": "Invalid NFL matchup"}), 400
+    try:
+        return jsonify(backend.nfl.game_probability(event_id))
+    except Exception as error:
+        print(f"NFL probability error: {error}")
+        return jsonify({"error": "Could not update NFL win probability"}), 502
+
+
 @app.get("/admin/nfl/players/<athlete_id>")
 @login_required
 def nfl_player_detail(athlete_id):
@@ -436,6 +448,18 @@ def public_nfl_matchup_detail(event_id):
     except Exception as error:
         print(f"Public NFL detail error: {error}")
         return jsonify({"error": "Could not load NFL matchup details"}), 502
+
+
+@app.get("/public/nfl/matchups/<event_id>/probability")
+@limiter.limit("12 per minute")
+def public_nfl_matchup_probability(event_id):
+    if not event_id.isdigit():
+        return jsonify({"error": "Invalid NFL matchup"}), 400
+    try:
+        return jsonify(backend.nfl.game_probability(event_id))
+    except Exception as error:
+        print(f"Public NFL probability error: {error}")
+        return jsonify({"error": "Could not update NFL win probability"}), 502
 
 
 @app.get("/public/nfl/players/<athlete_id>")

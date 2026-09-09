@@ -1,6 +1,7 @@
 import csv
 import html
 import json
+import math
 import re
 import time
 from collections import defaultdict
@@ -19,6 +20,96 @@ class NFLManager:
     _metrics_cached_at = 0
     _power_rankings_cache = None
     _power_rankings_cached_at = 0
+
+    @staticmethod
+    def _probability(value):
+        return round(max(1.0, min(99.0, value * 100)), 1)
+
+    @staticmethod
+    def _spread_margin(details, home_abbreviation, away_abbreviation):
+        match = re.search(r"([A-Z]{2,3})\s*([+-]?\d+(?:\.\d+)?)", details or "")
+        if not match:
+            return 0.0
+        favorite, line = match.group(1), abs(float(match.group(2)))
+        return line if favorite == home_abbreviation else -line if favorite == away_abbreviation else 0.0
+
+    def _pregame_prediction(self, summary, teams, unavailable_by_team=None):
+        unavailable_by_team = unavailable_by_team or {}
+        competition = (summary.get("header", {}).get("competitions") or [{}])[0]
+        pick = (summary.get("pickcenter") or summary.get("odds") or [{}])[0]
+        home, away = teams["home"], teams["away"]
+        home_metrics, away_metrics = home.get("statistics", {}), away.get("statistics", {})
+        spread = pick.get("details") or ""
+        market_margin = self._spread_margin(spread, home.get("abbreviation"), away.get("abbreviation"))
+        market_probability = 1 / (1 + math.exp(-market_margin / 6.5)) if spread else 0.5
+        predictor = summary.get("predictor") or {}
+        espn_probability = self._number((predictor.get("homeTeam") or {}).get("gameProjection")) / 100 or 0.5
+        epa_edge = home_metrics.get("adjustedEpaPerPlay", 0) - away_metrics.get("adjustedEpaPerPlay", 0)
+        power_edge = ((away.get("powerRank") or 16.5) - (home.get("powerRank") or 16.5)) / 31
+        injury_edge = (len(unavailable_by_team.get(away.get("abbreviation"), set())) - len(unavailable_by_team.get(home.get("abbreviation"), set()))) * 0.018
+        model_logit = epa_edge * 5.5 + power_edge * 0.7 + injury_edge + 0.18
+        model_probability = 1 / (1 + math.exp(-model_logit))
+        home_probability = market_probability * 0.55 + espn_probability * 0.30 + model_probability * 0.15
+        home_probability = max(0.01, min(0.99, home_probability))
+        away_probability = 1 - home_probability
+        projected_home_margin = round(math.log(home_probability / away_probability) * 6.5, 1)
+        confidence = "High" if abs(home_probability - .5) >= .22 else "Medium" if abs(home_probability - .5) >= .10 else "Low"
+        winner = home if home_probability >= .5 else away
+        factors = [
+            {"name": "Market spread", "value": spread or "Unavailable", "weight": "55%"},
+            {"name": "ESPN matchup model", "value": f"{self._probability(espn_probability)}% {home['abbreviation']}", "weight": "30%"},
+            {"name": "Efficiency model", "value": f"{self._probability(model_probability)}% {home['abbreviation']}", "weight": "15%"},
+            {"name": "Injury adjustment", "value": f"{home['abbreviation']} {len(unavailable_by_team.get(home.get('abbreviation'), set()))} out · {away['abbreviation']} {len(unavailable_by_team.get(away.get('abbreviation'), set()))} out"},
+        ]
+        return {
+            "source": "pregame",
+            "updatedAt": int(time.time()),
+            "winner": winner.get("name"),
+            "homeWinProbability": self._probability(home_probability),
+            "awayWinProbability": self._probability(away_probability),
+            "projectedHomeMargin": projected_home_margin,
+            "confidence": confidence,
+            "factors": factors,
+            "modelVersion": "NFL ensemble v1",
+        }
+
+    def game_probability(self, event_id):
+        summary = self._json(f"{self.ESPN_SITE}/summary?event={event_id}")
+        competition = (summary.get("header", {}).get("competitions") or [{}])[0]
+        competitors = {item.get("homeAway"): item for item in competition.get("competitors", [])}
+        state = competition.get("status", {}).get("type", {}).get("state", "pre")
+        home_score = self._number(competitors.get("home", {}).get("score"))
+        away_score = self._number(competitors.get("away", {}).get("score"))
+        win_probability = summary.get("winprobability") or []
+        if state == "in" and win_probability:
+            latest = win_probability[-1]
+            home_probability = self._number(latest.get("homeWinPercentage"))
+            if home_probability > 1:
+                home_probability /= 100
+            probability = {
+                "source": "live",
+                "updatedAt": int(time.time()),
+                "homeWinProbability": self._probability(home_probability),
+                "awayWinProbability": self._probability(1 - home_probability),
+                "confidence": "Live",
+            }
+        else:
+            teams = {side: self._team_summary(competitors.get(side, {}).get("team", {})) for side in ("away", "home")}
+            for team in teams.values():
+                team["statistics"] = self._metric_for(team.get("abbreviation"))
+                team["powerRank"] = None
+            probability = self._pregame_prediction(summary, teams)
+            probability["source"] = "final" if state == "post" else "pregame"
+        probability["gameState"] = state
+        probability["status"] = competition.get("status", {}).get("type", {}).get("detail")
+        probability["homeScore"] = home_score
+        probability["awayScore"] = away_score
+        probability["winner"] = (
+            competitors.get("home", {}).get("team", {}).get("displayName")
+            if probability["homeWinProbability"] >= probability["awayWinProbability"]
+            else competitors.get("away", {}).get("team", {}).get("displayName")
+        )
+        return probability
 
     def _json(self, url):
         request = Request(url, headers={"User-Agent": "LittleBrotherNFL/1.0", "Accept": "application/json"})
@@ -185,7 +276,9 @@ class NFLManager:
             model_edge += (home_metrics.get("specialTeamsScore", 0) - away_metrics.get("specialTeamsScore", 0)) * 0.004
             model_edge += 0.025
             market_edge = 0.035 if favorite_id == home_team.get("id") else -0.035 if favorite_id == away_team.get("id") else 0
-            projected_winner = home_team.get("displayName") if model_edge * 0.7 + market_edge * 0.3 >= 0 else away_team.get("displayName")
+            blended_edge = model_edge * 0.7 + market_edge * 0.3
+            home_probability = 1 / (1 + math.exp(-blended_edge * 6))
+            projected_winner = home_team.get("displayName") if home_probability >= .5 else away_team.get("displayName")
 
             venue = competition.get("venue", {})
             address = venue.get("address", {})
@@ -194,9 +287,14 @@ class NFLManager:
                 "name": event.get("name"),
                 "date": event.get("date"),
                 "status": event.get("status", {}).get("type", {}).get("detail", "Scheduled"),
+                "gameState": event.get("status", {}).get("type", {}).get("state", "pre"),
+                "homeScore": self._number(home.get("score")),
+                "awayScore": self._number(away.get("score")),
                 "home": self._team_summary(home_team),
                 "away": self._team_summary(away_team),
                 "projectedWinner": projected_winner,
+                "homeWinProbability": self._probability(home_probability),
+                "awayWinProbability": self._probability(1 - home_probability),
                 "spread": odds.get("details") or "Not available",
                 "venue": venue.get("fullName", "Venue TBD"),
                 "location": ", ".join(filter(None, [address.get("city"), address.get("state")])),
@@ -304,6 +402,10 @@ class NFLManager:
                     player["injury"] = injuries.get(str(player["id"]))
 
         pick = (summary.get("pickcenter") or [{}])[0]
+        prediction = self._pregame_prediction(summary, teams, unavailable_by_team)
+        live_state = competition.get("status", {}).get("type", {}).get("state", "pre")
+        if live_state in {"in", "post"}:
+            prediction = self.game_probability(event_id)
         articles = summary.get("news") or []
         if isinstance(articles, dict):
             articles = articles.get("articles", [])
@@ -344,6 +446,9 @@ class NFLManager:
                 "details": pick.get("details", "Not available"),
                 "overUnder": pick.get("overUnder"),
             },
+            "prediction": prediction,
+            "gameState": live_state,
+            "weather": (summary.get("gameInfo") or {}).get("weather") or summary.get("weather"),
             "articles": [
                 {"headline": article.get("headline"), "description": article.get("description"), "link": article.get("links", {}).get("web", {}).get("href")}
                 for article in relevant_articles[:6]
