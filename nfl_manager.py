@@ -475,14 +475,14 @@ class NFLManager:
                         projected["rushingYards"] = round(self._number(stats["rushingYards"]) / games * opponent.get("defenseRushYpg", 110) / 110, 1)
                     if row_position in ("WR", "TE", "RB") and stats.get("receivingYards"):
                         projected["receivingYards"] = round(self._number(stats["receivingYards"]) / games * opponent.get("defensePassYpg", 220) / 220, 1)
-                    if row_position in ("WR", "RB") and stats.get("receptions"):
+                    if row_position in ("WR", "TE", "RB") and stats.get("receptions"):
                         receptions_per_game = self._number(stats["receptions"]) / games
                         targets_per_game = self._number(stats.get("receivingTargets")) / games
                         receiving_yards_per_game = self._number(stats.get("receivingYards")) / games
                         opponent_factor = max(0.75, min(1.30, opponent.get("defensePassYpg", 220) / 220))
                         projected["receptions"] = round(receptions_per_game * opponent_factor, 1)
-                        baseline_receptions = 4.5 if row_position == "WR" else 2.5
-                        baseline_yards = 55 if row_position == "WR" else 25
+                        baseline_receptions = 4.5 if row_position == "WR" else 3.5 if row_position == "TE" else 2.5
+                        baseline_yards = 55 if row_position == "WR" else 40 if row_position == "TE" else 25
                         matchup_score = 50
                         matchup_score += (receptions_per_game - baseline_receptions) * 4.0
                         matchup_score += (targets_per_game - baseline_receptions * 1.45) * 1.8
