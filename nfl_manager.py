@@ -93,18 +93,28 @@ class NFLManager:
                 "awayWinProbability": self._probability(1 - home_probability),
                 "confidence": "Live",
             }
+        elif state == "post":
+            home_won = home_score > away_score
+            tied = home_score == away_score
+            probability = {
+                "source": "final",
+                "updatedAt": int(time.time()),
+                "homeWinProbability": 50.0 if tied else 100.0 if home_won else 0.0,
+                "awayWinProbability": 50.0 if tied else 0.0 if home_won else 100.0,
+                "confidence": "Final",
+            }
         else:
             teams = {side: self._team_summary(competitors.get(side, {}).get("team", {})) for side in ("away", "home")}
             for team in teams.values():
                 team["statistics"] = self._metric_for(team.get("abbreviation"))
                 team["powerRank"] = None
             probability = self._pregame_prediction(summary, teams)
-            probability["source"] = "final" if state == "post" else "pregame"
+            probability["source"] = "pregame"
         probability["gameState"] = state
         probability["status"] = competition.get("status", {}).get("type", {}).get("detail")
         probability["homeScore"] = home_score
         probability["awayScore"] = away_score
-        probability["winner"] = (
+        probability["winner"] = "Tie" if state == "post" and home_score == away_score else (
             competitors.get("home", {}).get("team", {}).get("displayName")
             if probability["homeWinProbability"] >= probability["awayWinProbability"]
             else competitors.get("away", {}).get("team", {}).get("displayName")
@@ -243,7 +253,8 @@ class NFLManager:
         week = scoreboard.get("week", {}).get("number")
         events = scoreboard.get("events", [])
         if events and all(
-            (event.get("status", {}).get("type", {}).get("completed") is True)
+            event.get("status", {}).get("type", {}).get("completed") is True
+            or event.get("status", {}).get("type", {}).get("state") == "post"
             for event in events
         ):
             next_week = int(week or 0) + 1
