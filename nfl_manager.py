@@ -282,12 +282,13 @@ class NFLManager:
 
             venue = competition.get("venue", {})
             address = venue.get("address", {})
-            matchups.append({
+            game_state = event.get("status", {}).get("type", {}).get("state", "pre")
+            matchup = {
                 "id": event.get("id"),
                 "name": event.get("name"),
                 "date": event.get("date"),
                 "status": event.get("status", {}).get("type", {}).get("detail", "Scheduled"),
-                "gameState": event.get("status", {}).get("type", {}).get("state", "pre"),
+                "gameState": game_state,
                 "homeScore": self._number(home.get("score")),
                 "awayScore": self._number(away.get("score")),
                 "home": self._team_summary(home_team),
@@ -298,7 +299,21 @@ class NFLManager:
                 "spread": odds.get("details") or "Not available",
                 "venue": venue.get("fullName", "Venue TBD"),
                 "location": ", ".join(filter(None, [address.get("city"), address.get("state")])),
-            })
+            }
+            if game_state == "in":
+                try:
+                    live = self.game_probability(str(event.get("id")))
+                    matchup.update({
+                        "projectedWinner": live.get("winner", matchup["projectedWinner"]),
+                        "homeWinProbability": live.get("homeWinProbability", matchup["homeWinProbability"]),
+                        "awayWinProbability": live.get("awayWinProbability", matchup["awayWinProbability"]),
+                        "homeScore": live.get("homeScore", matchup["homeScore"]),
+                        "awayScore": live.get("awayScore", matchup["awayScore"]),
+                        "status": live.get("status", matchup["status"]),
+                    })
+                except Exception as error:
+                    print(f"Could not update live matchup {event.get('id')}: {error}")
+            matchups.append(matchup)
         return {
             "season": scoreboard.get("season", {}).get("year"),
             "seasonType": scoreboard.get("season", {}).get("type"),
