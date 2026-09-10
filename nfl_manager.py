@@ -401,25 +401,6 @@ class NFLManager:
                 for player in team["depthChart"][unit]:
                     player["injury"] = injuries.get(str(player["id"]))
 
-        coverage_jobs = []
-        with ThreadPoolExecutor(max_workers=6) as executor:
-            for side, team in teams.items():
-                opponent = teams["home" if side == "away" else "away"]
-                corners = [player for player in team["depthChart"]["defense"] if player.get("position") in {"CB", "LCB", "RCB", "NB", "DB"}]
-                receivers = [player for player in opponent["depthChart"]["offense"] if player.get("position") == "WR"]
-                for index, corner in enumerate(corners):
-                    if receivers:
-                        receiver = receivers[index % len(receivers)]
-                        future = executor.submit(self._receiver_corner_evaluation, receiver.get("id"), corner.get("id"), team.get("abbreviation"), "WR")
-                        coverage_jobs.append((corner, receiver, future))
-            for corner, receiver, future in coverage_jobs:
-                try:
-                    evaluation = future.result()
-                    corner["matchupScore"] = 100 - evaluation["receiverScore"]
-                    corner["matchupOpponent"] = receiver.get("name")
-                except Exception as error:
-                    print(f"Could not attach corner matchup score: {error}")
-
         pick = (summary.get("pickcenter") or [{}])[0]
         prediction = self._pregame_prediction(summary, teams, unavailable_by_team)
         live_state = competition.get("status", {}).get("type", {}).get("state", "pre")
