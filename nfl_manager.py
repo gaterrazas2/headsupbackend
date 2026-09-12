@@ -21,6 +21,31 @@ class NFLManager:
     _power_rankings_cache = None
     _power_rankings_cached_at = 0
 
+    def __init__(self, predictions_collection=None):
+        self.predictions_collection = predictions_collection
+
+    def _save_pregame_prediction(self, event_id, prediction, teams):
+        if self.predictions_collection is None or not event_id or prediction.get("source") != "pregame":
+            return
+        self.predictions_collection.update_one(
+            {"gameId": str(event_id), "sport": "nfl", "phase": "pregame"},
+            {"$setOnInsert": {
+                "gameId": str(event_id), "sport": "nfl", "phase": "pregame",
+                "awayTeam": teams["away"].get("name"), "homeTeam": teams["home"].get("name"),
+                "prediction": prediction, "createdAt": int(time.time()),
+            }},
+            upsert=True,
+        )
+
+    def _saved_pregame_prediction(self, event_id):
+        if self.predictions_collection is None:
+            return None
+        row = self.predictions_collection.find_one(
+            {"gameId": str(event_id), "sport": "nfl", "phase": "pregame"},
+            {"_id": 0, "prediction": 1},
+        )
+        return row.get("prediction") if row else None
+
     @staticmethod
     def _probability(value):
         return round(max(1.0, min(99.0, value * 100)), 1)
@@ -429,9 +454,16 @@ class NFLManager:
 
         pick = (summary.get("pickcenter") or [{}])[0]
         prediction = self._pregame_prediction(summary, teams, unavailable_by_team)
+        pregame_prediction = self._saved_pregame_prediction(event_id)
         live_state = competition.get("status", {}).get("type", {}).get("state", "pre")
+        if live_state == "pre":
+            self._save_pregame_prediction(event_id, prediction, teams)
+            pregame_prediction = self._saved_pregame_prediction(event_id) or prediction
         if live_state in {"in", "post"}:
             prediction = self.game_probability(event_id)
+        if live_state == "post" and not pregame_prediction:
+            pregame_prediction = self._pregame_prediction(summary, teams, unavailable_by_team)
+            pregame_prediction["reconstructed"] = True
         articles = summary.get("news") or []
         if isinstance(articles, dict):
             articles = articles.get("articles", [])
@@ -473,6 +505,7 @@ class NFLManager:
                 "overUnder": pick.get("overUnder"),
             },
             "prediction": prediction,
+            "pregamePrediction": pregame_prediction,
             "gameState": live_state,
             "weather": (summary.get("gameInfo") or {}).get("weather") or summary.get("weather"),
             "articles": [
