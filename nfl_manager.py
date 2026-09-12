@@ -420,6 +420,7 @@ class NFLManager:
             team["powerRank"] = ranking.get("rank")
 
         injuries = {}
+        game_injuries = []
         unavailable_by_team = defaultdict(set)
         injury_groups = summary.get("injuries", {})
         if isinstance(injury_groups, dict):
@@ -432,6 +433,15 @@ class NFLManager:
                     "type": injury.get("details", {}).get("type"),
                     "detail": injury.get("details", {}).get("detail"),
                 }
+                game_injuries.append({
+                    "id": athlete.get("id"),
+                    "name": athlete.get("displayName"),
+                    "team": group.get("team", {}).get("abbreviation"),
+                    "status": injury.get("status") or injury.get("type", {}).get("description"),
+                    "type": injury.get("details", {}).get("type"),
+                    "detail": injury.get("details", {}).get("detail"),
+                    "didNotFinish": (injury.get("status") or "").lower() == "out" or (injury.get("type", {}).get("abbreviation") or "").upper() == "O",
+                })
                 status = (injury.get("status") or "").lower()
                 status_type = (injury.get("type", {}).get("abbreviation") or "").upper()
                 if status in {"out", "injured reserve", "suspended"} or status_type in {"O", "IR", "SUSP"}:
@@ -506,6 +516,7 @@ class NFLManager:
             },
             "prediction": prediction,
             "pregamePrediction": pregame_prediction,
+            "gameInjuries": game_injuries if live_state == "post" else [],
             "gameState": live_state,
             "weather": (summary.get("gameInfo") or {}).get("weather") or summary.get("weather"),
             "articles": [
