@@ -77,6 +77,7 @@ class Backend:
         self.collection = self.db["Posts"]
         self.predictions = self.db["ModelPredictions"]
         self.nfl_predictions = self.db["NFLPredictions"]
+        self.nfl_week_archives = self.db["NFLWeekArchives"]
         self.fantasy_recommendations = self.db["FantasyRecommendations"]
 
         self.context = self.load_context()
@@ -84,7 +85,7 @@ class Backend:
         self.openai = OpenAI()
         self.predictor = BaseballPredictor()
         self.fantasy = FantasyManager(self.fantasy_recommendations)
-        self.nfl = NFLManager(self.nfl_predictions)
+        self.nfl = NFLManager(self.nfl_predictions, self.nfl_week_archives)
 
     def record_model_prediction(self, payload, probabilities, nrfi_probability):
         """Keep the first pregame forecast so later refreshes cannot rewrite history."""

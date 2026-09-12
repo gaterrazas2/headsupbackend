@@ -21,8 +21,45 @@ class NFLManager:
     _power_rankings_cache = None
     _power_rankings_cached_at = 0
 
-    def __init__(self, predictions_collection=None):
+    def __init__(self, predictions_collection=None, archives_collection=None):
         self.predictions_collection = predictions_collection
+        self.archives_collection = archives_collection
+
+    def _archive_completed_week(self, events, season, season_type, week):
+        if self.archives_collection is None or not events or not week:
+            return
+        games = []
+        for event in events:
+            competition = (event.get("competitions") or [{}])[0]
+            competitors = {item.get("homeAway"): item for item in competition.get("competitors", [])}
+            home, away = competitors.get("home", {}), competitors.get("away", {})
+            home_team, away_team = home.get("team", {}), away.get("team", {})
+            saved = self._saved_pregame_prediction(event.get("id")) or {}
+            forecast = saved.get("prediction", {})
+            venue = competition.get("venue", {})
+            address = venue.get("address", {})
+            games.append({
+                "id": str(event.get("id")), "date": event.get("date"), "status": event.get("status", {}).get("type", {}).get("detail", "Final"), "gameState": "post",
+                "homeScore": self._number(home.get("score")), "awayScore": self._number(away.get("score")),
+                "home": self._team_summary(home_team), "away": self._team_summary(away_team),
+                "projectedWinner": forecast.get("winner"), "homeWinProbability": forecast.get("homeWinProbability"), "awayWinProbability": forecast.get("awayWinProbability"),
+                "spread": "Final", "venue": venue.get("fullName", ""), "location": ", ".join(filter(None, [address.get("city"), address.get("state")])),
+            })
+        self.archives_collection.update_one(
+            {"season": season, "seasonType": season_type, "week": week},
+            {"$set": {"season": season, "seasonType": season_type, "week": week, "games": games, "archivedAt": int(time.time())}},
+            upsert=True,
+        )
+
+    def history(self, season, season_type=None, current_week=None):
+        if self.archives_collection is None or not season:
+            return []
+        query = {"season": season}
+        if season_type:
+            query["seasonType"] = season_type
+        if current_week:
+            query["week"] = {"$lt": current_week}
+        return list(self.archives_collection.find(query, {"_id": 0}).sort("week", -1))
 
     def _save_pregame_prediction(self, event_id, prediction, teams, player_projections=None):
         if self.predictions_collection is None or not event_id or prediction.get("source") != "pregame":
@@ -401,6 +438,7 @@ class NFLManager:
             or event.get("status", {}).get("type", {}).get("state") == "post"
             for event in events
         ):
+            self._archive_completed_week(events, season, season_type, week)
             next_week = int(week or 0) + 1
             scoreboard = self._json(
                 f"{self.ESPN_SITE}/scoreboard?dates={season}&seasontype={season_type}&week={next_week}&limit=50"
@@ -476,6 +514,7 @@ class NFLManager:
             "matchups": matchups,
             "rankingsSeason": 2025,
             "accuracy": self.accuracy(scoreboard.get("season", {}).get("year")),
+            "history": self.history(scoreboard.get("season", {}).get("year"), scoreboard.get("season", {}).get("type"), scoreboard.get("week", {}).get("number")),
         }
 
     def _team_summary(self, team):
