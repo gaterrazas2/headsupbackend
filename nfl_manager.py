@@ -24,7 +24,7 @@ class NFLManager:
     def __init__(self, predictions_collection=None):
         self.predictions_collection = predictions_collection
 
-    def _save_pregame_prediction(self, event_id, prediction, teams):
+    def _save_pregame_prediction(self, event_id, prediction, teams, player_projections=None):
         if self.predictions_collection is None or not event_id or prediction.get("source") != "pregame":
             return
         self.predictions_collection.update_one(
@@ -32,19 +32,80 @@ class NFLManager:
             {"$setOnInsert": {
                 "gameId": str(event_id), "sport": "nfl", "phase": "pregame",
                 "awayTeam": teams["away"].get("name"), "homeTeam": teams["home"].get("name"),
-                "prediction": prediction, "createdAt": int(time.time()),
+                "prediction": prediction, "playerProjections": player_projections or [], "createdAt": int(time.time()),
             }},
             upsert=True,
         )
+        if player_projections:
+            self.predictions_collection.update_one(
+                {"gameId": str(event_id), "sport": "nfl", "phase": "pregame", "$or": [{"playerProjections": {"$exists": False}}, {"playerProjections": []}]},
+                {"$set": {"playerProjections": player_projections}},
+            )
 
     def _saved_pregame_prediction(self, event_id):
         if self.predictions_collection is None:
             return None
         row = self.predictions_collection.find_one(
             {"gameId": str(event_id), "sport": "nfl", "phase": "pregame"},
-            {"_id": 0, "prediction": 1},
+            {"_id": 0, "prediction": 1, "playerProjections": 1},
         )
-        return row.get("prediction") if row else None
+        return row if row else None
+
+    def _skill_projection(self, player, opponent_abbreviation):
+        position = (player.get("position") or "").upper()
+        if position not in {"QB", "RB", "WR"}:
+            return None
+        try:
+            data = self._json(f"{self.ESPN_WEB}/athletes/{player['id']}/stats?region=us&lang=en&contentorigin=espn")
+        except Exception as error:
+            print(f"Could not project {player.get('name')}: {error}")
+            return None
+        opponent = self._metric_for(opponent_abbreviation)
+        projected = {}
+        wanted = {"QB": {"passing"}, "RB": {"rushing", "receiving"}, "WR": {"receiving"}}[position]
+        for category in data.get("categories", []):
+            category_name = (category.get("name") or category.get("displayName") or "").lower()
+            if category_name not in wanted:
+                continue
+            row = max(category.get("statistics", []), key=lambda item: item.get("season", {}).get("year", 0), default={})
+            stats = dict(zip(category.get("names", []), row.get("stats", [])))
+            games = self._number(stats.get("gamesPlayed")) or 1
+            if position == "QB" and category_name == "passing":
+                projected["passingYards"] = round(self._number(stats.get("passingYards")) / games * opponent.get("defensePassYpg", 220) / 220, 1)
+                projected["completions"] = round(self._number(stats.get("completions") or stats.get("passingCompletions")) / games * opponent.get("defensePassYpg", 220) / 220, 1)
+            elif category_name == "rushing":
+                projected["rushingYards"] = round(self._number(stats.get("rushingYards")) / games * opponent.get("defenseRushYpg", 110) / 110, 1)
+            elif category_name == "receiving":
+                projected["receivingYards"] = round(self._number(stats.get("receivingYards")) / games * opponent.get("defensePassYpg", 220) / 220, 1)
+                if position == "WR":
+                    projected["receptions"] = round(self._number(stats.get("receptions")) / games * opponent.get("defensePassYpg", 220) / 220, 1)
+        return {"id": str(player.get("id")), "name": player.get("name"), "team": player.get("team"), "position": position, "projected": projected}
+
+    def _actual_skill_stats(self, summary, positions, injuries):
+        comparisons = []
+        for team_group in (summary.get("boxscore", {}).get("players") or []):
+            team_abbreviation = team_group.get("team", {}).get("abbreviation")
+            player_rows = {}
+            for category in team_group.get("statistics", []):
+                keys = category.get("keys") or category.get("names") or []
+                for athlete_row in category.get("athletes", []):
+                    athlete = athlete_row.get("athlete", {})
+                    athlete_id = str(athlete.get("id"))
+                    values = dict(zip(keys, athlete_row.get("stats", [])))
+                    player_rows.setdefault(athlete_id, {"id": athlete_id, "name": athlete.get("displayName"), "team": team_abbreviation, "position": athlete.get("position", {}).get("abbreviation", ""), "actual": {}})["actual"].update(values)
+            for athlete_id, row in player_rows.items():
+                position = positions.get(athlete_id) or row.get("position", "")
+                if position not in {"QB", "RB", "WR"}:
+                    continue
+                aliases = {
+                    "passingYards": ["passingYards"], "completions": ["completions", "passingCompletions"],
+                    "rushingYards": ["rushingYards"], "receivingYards": ["receivingYards"],
+                    "receptions": ["receptions", "receivingReceptions"],
+                }
+                actual = {key: next((row["actual"][name] for name in names if name in row["actual"]), "—") for key, names in aliases.items()}
+                row.update({"position": position, "actual": actual, "didNotFinish": injuries.get(athlete_id, {}).get("didNotFinish", False)})
+                comparisons.append(row)
+        return comparisons
 
     @staticmethod
     def _probability(value):
@@ -420,7 +481,6 @@ class NFLManager:
             team["powerRank"] = ranking.get("rank")
 
         injuries = {}
-        game_injuries = []
         unavailable_by_team = defaultdict(set)
         injury_groups = summary.get("injuries", {})
         if isinstance(injury_groups, dict):
@@ -428,20 +488,13 @@ class NFLManager:
         for group in injury_groups or []:
             for injury in group.get("injuries", []):
                 athlete = injury.get("athlete", {})
+                did_not_finish = (injury.get("status") or "").lower() == "out" or (injury.get("type", {}).get("abbreviation") or "").upper() == "O"
                 injuries[str(athlete.get("id"))] = {
                     "status": injury.get("status"),
                     "type": injury.get("details", {}).get("type"),
                     "detail": injury.get("details", {}).get("detail"),
+                    "didNotFinish": did_not_finish,
                 }
-                game_injuries.append({
-                    "id": athlete.get("id"),
-                    "name": athlete.get("displayName"),
-                    "team": group.get("team", {}).get("abbreviation"),
-                    "status": injury.get("status") or injury.get("type", {}).get("description"),
-                    "type": injury.get("details", {}).get("type"),
-                    "detail": injury.get("details", {}).get("detail"),
-                    "didNotFinish": (injury.get("status") or "").lower() == "out" or (injury.get("type", {}).get("abbreviation") or "").upper() == "O",
-                })
                 status = (injury.get("status") or "").lower()
                 status_type = (injury.get("type", {}).get("abbreviation") or "").upper()
                 if status in {"out", "injured reserve", "suspended"} or status_type in {"O", "IR", "SUSP"}:
@@ -464,16 +517,38 @@ class NFLManager:
 
         pick = (summary.get("pickcenter") or [{}])[0]
         prediction = self._pregame_prediction(summary, teams, unavailable_by_team)
-        pregame_prediction = self._saved_pregame_prediction(event_id)
+        saved_pregame = self._saved_pregame_prediction(event_id)
+        pregame_prediction = saved_pregame.get("prediction") if saved_pregame else None
         live_state = competition.get("status", {}).get("type", {}).get("state", "pre")
         if live_state == "pre":
-            self._save_pregame_prediction(event_id, prediction, teams)
-            pregame_prediction = self._saved_pregame_prediction(event_id) or prediction
+            projection_jobs = []
+            with ThreadPoolExecutor(max_workers=8) as executor:
+                for side, opponent_side in (("away", "home"), ("home", "away")):
+                    for player in teams[side].get("depthChart", {}).get("offense", []):
+                        if player.get("position") in {"QB", "RB", "WR"}:
+                            projection_jobs.append(executor.submit(self._skill_projection, player, teams[opponent_side].get("abbreviation")))
+                player_projections = [result for result in (job.result() for job in projection_jobs) if result and result.get("projected")]
+            self._save_pregame_prediction(event_id, prediction, teams, player_projections)
+            saved_pregame = self._saved_pregame_prediction(event_id)
+            pregame_prediction = saved_pregame.get("prediction") if saved_pregame else prediction
         if live_state in {"in", "post"}:
             prediction = self.game_probability(event_id)
         if live_state == "post" and not pregame_prediction:
             pregame_prediction = self._pregame_prediction(summary, teams, unavailable_by_team)
             pregame_prediction["reconstructed"] = True
+        positions = {
+            str(player.get("id")): player.get("position")
+            for team in teams.values()
+            for player in team.get("depthChart", {}).get("offense", [])
+        }
+        player_comparisons = []
+        if live_state == "post":
+            actual_players = self._actual_skill_stats(summary, positions, injuries)
+            saved_players = {str(item.get("id")): item for item in (saved_pregame or {}).get("playerProjections", [])}
+            for actual in actual_players:
+                forecast_player = saved_players.get(actual["id"], {})
+                actual["projected"] = forecast_player.get("projected", {})
+                player_comparisons.append(actual)
         articles = summary.get("news") or []
         if isinstance(articles, dict):
             articles = articles.get("articles", [])
@@ -516,7 +591,7 @@ class NFLManager:
             },
             "prediction": prediction,
             "pregamePrediction": pregame_prediction,
-            "gameInjuries": game_injuries if live_state == "post" else [],
+            "playerComparisons": player_comparisons,
             "gameState": live_state,
             "weather": (summary.get("gameInfo") or {}).get("weather") or summary.get("weather"),
             "articles": [
