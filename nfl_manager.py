@@ -51,6 +51,64 @@ class NFLManager:
         )
         return row if row else None
 
+    def accuracy(self, season=None):
+        if self.predictions_collection is None:
+            return {"score": None, "wins": 0, "losses": 0, "games": {"wins": 0, "losses": 0}, "props": {"wins": 0, "losses": 0}}
+        season = season or time.gmtime().tm_year
+        rows = self.predictions_collection.find({"sport": "nfl", "season": season, "settled": True}, {"_id": 0, "grading": 1})
+        game_wins = game_losses = prop_wins = prop_losses = 0
+        for row in rows:
+            grading = row.get("grading", {})
+            if grading.get("gameCorrect") is True:
+                game_wins += 1
+            elif grading.get("gameCorrect") is False:
+                game_losses += 1
+            for prop in grading.get("props", []):
+                if prop.get("win"):
+                    prop_wins += 1
+                else:
+                    prop_losses += 1
+        wins, losses = game_wins + prop_wins, game_losses + prop_losses
+        total = wins + losses
+        return {
+            "score": round(wins / total * 100, 1) if total else None,
+            "wins": wins, "losses": losses,
+            "games": {"wins": game_wins, "losses": game_losses},
+            "props": {"wins": prop_wins, "losses": prop_losses},
+        }
+
+    def _settle_prediction(self, event_id, summary, prediction, teams, player_comparisons):
+        if self.predictions_collection is None:
+            return
+        saved = self._saved_pregame_prediction(event_id)
+        if not saved or saved.get("settled"):
+            return
+        actual_winner = "Tie" if prediction.get("homeScore") == prediction.get("awayScore") else (
+            teams["home"].get("name") if prediction.get("homeScore", 0) > prediction.get("awayScore", 0) else teams["away"].get("name")
+        )
+        forecast = saved.get("prediction", {})
+        props = []
+        relevant = {"QB": ["passingYards", "completions"], "RB": ["rushingYards", "receivingYards"], "WR": ["receptions", "receivingYards"]}
+        for player in player_comparisons:
+            for stat in relevant.get(player.get("position"), []):
+                projected = player.get("projected", {}).get(stat)
+                actual = player.get("actual", {}).get(stat)
+                if projected is None or actual in (None, "—", ""):
+                    continue
+                actual_number = self._number(actual)
+                props.append({
+                    "playerId": player.get("id"), "player": player.get("name"), "position": player.get("position"),
+                    "stat": stat, "projected": projected, "actual": actual_number, "win": actual_number >= self._number(projected),
+                })
+        season = (summary.get("header", {}).get("season") or {}).get("year") or time.gmtime().tm_year
+        self.predictions_collection.update_one(
+            {"gameId": str(event_id), "sport": "nfl", "phase": "pregame"},
+            {"$set": {"season": season, "settled": True, "settledAt": int(time.time()), "grading": {
+                "gameCorrect": None if actual_winner == "Tie" else forecast.get("winner") == actual_winner,
+                "projectedWinner": forecast.get("winner"), "actualWinner": actual_winner, "props": props,
+            }}},
+        )
+
     def _skill_projection(self, player, opponent_abbreviation):
         position = (player.get("position") or "").upper()
         if position not in {"QB", "RB", "WR"}:
@@ -417,6 +475,7 @@ class NFLManager:
             "week": scoreboard.get("week", {}).get("number"),
             "matchups": matchups,
             "rankingsSeason": 2025,
+            "accuracy": self.accuracy(scoreboard.get("season", {}).get("year")),
         }
 
     def _team_summary(self, team):
@@ -549,6 +608,7 @@ class NFLManager:
                 forecast_player = saved_players.get(actual["id"], {})
                 actual["projected"] = forecast_player.get("projected", {})
                 player_comparisons.append(actual)
+            self._settle_prediction(event_id, summary, prediction, teams, player_comparisons)
         articles = summary.get("news") or []
         if isinstance(articles, dict):
             articles = articles.get("articles", [])
@@ -599,6 +659,7 @@ class NFLManager:
                 for article in relevant_articles[:6]
             ],
             "rankingsSeason": 2025,
+            "accuracy": self.accuracy((summary.get("header", {}).get("season") or {}).get("year")),
             "powerRankings": {
                 "title": power_rankings.get("title"),
                 "published": power_rankings.get("published"),
