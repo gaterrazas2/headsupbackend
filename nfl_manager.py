@@ -91,7 +91,7 @@ class NFLManager:
                 continue
             if state != "pre":
                 continue
-            if existing.get("playerProjections") and all("touchdownProbability" in item.get("projected", {}) for item in existing["playerProjections"]):
+            if existing.get("playerProjections") and all("touchdownProbability" in item.get("projected", {}) and "matchupEdges" in item.get("projected", {}) for item in existing["playerProjections"]):
                 skipped.append(event_id)
                 continue
             try:
@@ -116,7 +116,7 @@ class NFLManager:
         )
         if player_projections:
             self.predictions_collection.update_one(
-                {"gameId": str(event_id), "sport": "nfl", "phase": "pregame", "$or": [{"playerProjections": {"$exists": False}}, {"playerProjections": []}, {"playerProjections.projected.touchdownProbability": {"$exists": False}}]},
+                {"gameId": str(event_id), "sport": "nfl", "phase": "pregame", "$or": [{"playerProjections": {"$exists": False}}, {"playerProjections": []}, {"playerProjections.projected.touchdownProbability": {"$exists": False}}, {"playerProjections.projected.matchupEdges": {"$exists": False}}]},
                 {"$set": {"playerProjections": player_projections}},
             )
 
@@ -188,7 +188,7 @@ class NFLManager:
             }}},
         )
 
-    def _skill_projection(self, player, opponent_abbreviation):
+    def _skill_projection(self, player, opponent_abbreviation, team_abbreviation=None):
         position = (player.get("position") or "").upper()
         if position not in {"QB", "RB", "WR"}:
             return None
@@ -198,7 +198,9 @@ class NFLManager:
             print(f"Could not project {player.get('name')}: {error}")
             return None
         opponent = self._metric_for(opponent_abbreviation)
+        team_metrics = self._metric_for(team_abbreviation) if team_abbreviation else {}
         projected = {}
+        matchup_edges = {}
         expected_touchdowns = 0.0
         wanted = {"QB": {"passing"}, "RB": {"rushing", "receiving"}, "WR": {"receiving"}}[position]
         for category in data.get("categories", []):
@@ -209,49 +211,77 @@ class NFLManager:
             stats = dict(zip(category.get("names", []), row.get("stats", [])))
             games = self._number(stats.get("gamesPlayed")) or 1
             if position == "QB" and category_name == "passing":
-                projected["passingYards"] = round(self._number(stats.get("passingYards")) / games * opponent.get("defensePassYpg", 220) / 220, 1)
-                projected["completions"] = round(self._number(stats.get("completions") or stats.get("passingCompletions")) / games * opponent.get("defensePassYpg", 220) / 220, 1)
-                expected_touchdowns += self._number(stats.get("passingTouchdowns")) / games * opponent.get("defensePassYpg", 220) / 220
+                multiplier = max(0.75, min(1.25, 0.55 * (self._number(opponent.get("defensePassYpg")) or 220) / 220 + 0.45 * (self._number(team_metrics.get("offensePassYpg")) or 220) / 220))
+                projected["passingYards"] = round(self._number(stats.get("passingYards")) / games * multiplier, 1)
+                projected["completions"] = round(self._number(stats.get("completions") or stats.get("passingCompletions")) / games * multiplier, 1)
+                matchup_edges["passingYards"] = round((multiplier - 1) * 100, 1)
+                expected_touchdowns += self._number(stats.get("passingTouchdowns")) / games * multiplier
             elif category_name == "rushing":
-                projected["rushingYards"] = round(self._number(stats.get("rushingYards")) / games * opponent.get("defenseRushYpg", 110) / 110, 1)
-                expected_touchdowns += self._number(stats.get("rushingTouchdowns")) / games * opponent.get("defenseRushYpg", 110) / 110
+                multiplier = max(0.75, min(1.25, 0.55 * (self._number(opponent.get("defenseRushYpg")) or 110) / 110 + 0.45 * (self._number(team_metrics.get("offenseRushYpg")) or 110) / 110))
+                projected["rushingYards"] = round(self._number(stats.get("rushingYards")) / games * multiplier, 1)
+                matchup_edges["rushingYards"] = round((multiplier - 1) * 100, 1)
+                expected_touchdowns += self._number(stats.get("rushingTouchdowns")) / games * multiplier
             elif category_name == "receiving":
-                projected["receivingYards"] = round(self._number(stats.get("receivingYards")) / games * opponent.get("defensePassYpg", 220) / 220, 1)
-                expected_touchdowns += self._number(stats.get("receivingTouchdowns")) / games * opponent.get("defensePassYpg", 220) / 220
+                multiplier = max(0.75, min(1.25, 0.55 * (self._number(opponent.get("defensePassYpg")) or 220) / 220 + 0.45 * (self._number(team_metrics.get("offensePassYpg")) or 220) / 220))
+                projected["receivingYards"] = round(self._number(stats.get("receivingYards")) / games * multiplier, 1)
+                matchup_edges["receivingYards"] = round((multiplier - 1) * 100, 1)
+                expected_touchdowns += self._number(stats.get("receivingTouchdowns")) / games * multiplier
                 if position == "WR":
-                    projected["receptions"] = round(self._number(stats.get("receptions")) / games * opponent.get("defensePassYpg", 220) / 220, 1)
+                    projected["receptions"] = round(self._number(stats.get("receptions")) / games * multiplier, 1)
+                    matchup_edges["receptions"] = matchup_edges["receivingYards"]
+        projected["matchupEdges"] = matchup_edges
         projected["touchdownProbability"] = round((1 - math.exp(-max(0, expected_touchdowns))) * 100, 1)
         return {"id": str(player.get("id")), "name": player.get("name"), "team": player.get("team"), "position": position, "projected": projected}
 
     def _top_prop_candidates(self, players):
         """Rank alternate player lines, allowing QB touchdowns only at 2+."""
         configurations = {
-            "QB": {"passingYards": (25, 0.9, 0.25, "passing yards")},
-            "RB": {"rushingYards": (10, 0.9, 0.45, "rushing yards"), "receivingYards": (10, 0.9, 0.55, "receiving yards")},
-            "WR": {"receptions": (1, 0.9, 0.4, "receptions"), "receivingYards": (10, 0.9, 0.45, "receiving yards")},
+            "QB": {"passingYards": (25, 0.25, "passing yards", 199.5)},
+            "RB": {"rushingYards": (10, 0.45, "rushing yards", 39.5), "receivingYards": (10, 0.55, "receiving yards", 19.5)},
+            "WR": {"receptions": (1, 0.4, "receptions", 3.5), "receivingYards": (10, 0.45, "receiving yards", 39.5)},
         }
         candidates = []
         for player in players:
             position = player.get("position")
             projected = player.get("projected", {})
             common = {"playerId": player.get("id"), "player": player.get("name"), "team": player.get("team"), "position": position}
-            for stat, (step, ratio, variation, label) in configurations.get(position, {}).items():
+            matchup_edges = projected.get("matchupEdges", {})
+            for stat, (step, variation, label, minimum_line) in configurations.get(position, {}).items():
                 mean = self._number(projected.get(stat))
                 if mean <= 0:
                     continue
-                line = max(step - 0.5, math.floor(mean * ratio / step) * step - 0.5)
+                line = math.floor(mean / step) * step - 0.5
+                if line < minimum_line:
+                    continue
                 deviation = max(step, mean * variation)
                 probability = 0.5 * (1 + math.erf((mean - line) / (deviation * math.sqrt(2))))
-                candidates.append({**common, "prop": f"Over {line:g} {label}", "probability": round(probability * 100, 1)})
+                probability = round(probability * 100, 1)
+                edge = self._number(matchup_edges.get(stat))
+                value_score = round(max(1, min(99, probability + edge * 0.5)), 1)
+                candidates.append({**common, "prop": f"Over {line:g} {label}", "probability": probability, "matchupEdge": edge, "valueScore": value_score})
             if position in {"RB", "WR"} and projected.get("touchdownProbability") is not None:
-                candidates.append({**common, "prop": "Anytime touchdown", "probability": projected["touchdownProbability"]})
+                probability = projected["touchdownProbability"]
+                if 30 <= probability <= 75:
+                    edge = max(matchup_edges.values(), default=0)
+                    candidates.append({**common, "prop": "Anytime touchdown", "probability": probability, "matchupEdge": edge, "valueScore": round(probability + edge * 0.5, 1)})
             if position == "QB" and projected.get("touchdownProbability") is not None:
                 one_plus_probability = min(0.999, max(0.0, self._number(projected["touchdownProbability"]) / 100))
                 expected_touchdowns = -math.log(1 - one_plus_probability)
                 two_plus_probability = 1 - math.exp(-expected_touchdowns) * (1 + expected_touchdowns)
                 if two_plus_probability >= 0.5:
-                    candidates.append({**common, "prop": "2+ passing touchdowns", "probability": round(two_plus_probability * 100, 1)})
-        return sorted(candidates, key=lambda item: item["probability"], reverse=True)[:3]
+                    probability = round(two_plus_probability * 100, 1)
+                    edge = self._number(matchup_edges.get("passingYards"))
+                    candidates.append({**common, "prop": "2+ passing touchdowns", "probability": probability, "matchupEdge": edge, "valueScore": round(probability + edge * 0.5, 1)})
+        ranked = sorted(candidates, key=lambda item: item["valueScore"], reverse=True)
+        selected, used_players = [], set()
+        for candidate in ranked:
+            if candidate["playerId"] in used_players:
+                continue
+            selected.append(candidate)
+            used_players.add(candidate["playerId"])
+            if len(selected) == 3:
+                break
+        return selected
 
     def _actual_skill_stats(self, summary, positions, injuries):
         comparisons = []
@@ -732,7 +762,7 @@ class NFLManager:
                 for side, opponent_side in (("away", "home"), ("home", "away")):
                     for player in teams[side].get("depthChart", {}).get("offense", []):
                         if player.get("position") in {"QB", "RB", "WR"}:
-                            projection_jobs.append(executor.submit(self._skill_projection, player, teams[opponent_side].get("abbreviation")))
+                            projection_jobs.append(executor.submit(self._skill_projection, player, teams[opponent_side].get("abbreviation"), teams[side].get("abbreviation")))
                 player_projections = [result for result in (job.result() for job in projection_jobs) if result and result.get("projected")]
             self._save_pregame_prediction(event_id, prediction, teams, player_projections)
             saved_pregame = self._saved_pregame_prediction(event_id)
