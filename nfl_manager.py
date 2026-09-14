@@ -6,7 +6,6 @@ import re
 import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
 from io import StringIO
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -64,23 +63,34 @@ class NFLManager:
         return list(self.archives_collection.find(query, {"_id": 0}).sort("week", -1))
 
     def snapshot_announced_rosters(self):
-        """Save props shortly after NFL active rosters are normally announced."""
+        """Save every upcoming forecast and automatically grade completed games."""
         scoreboard = self._json(f"{self.ESPN_SITE}/scoreboard?limit=50")
-        now = datetime.now(timezone.utc)
-        saved, skipped, errors = [], [], []
+        season = scoreboard.get("season", {}).get("year") or time.gmtime().tm_year
+        saved, skipped, settled, missed, errors = [], [], [], [], []
         for event in scoreboard.get("events", []):
-            if event.get("status", {}).get("type", {}).get("state") != "pre":
-                continue
-            try:
-                kickoff = datetime.fromisoformat((event.get("date") or "").replace("Z", "+00:00"))
-                minutes_to_kickoff = (kickoff - now).total_seconds() / 60
-            except (TypeError, ValueError):
-                continue
-            # NFL clubs publish inactive/active lists 90 minutes before kickoff.
-            if not 0 <= minutes_to_kickoff <= 85:
-                continue
+            state = event.get("status", {}).get("type", {}).get("state")
             event_id = str(event.get("id"))
             existing = self._saved_pregame_prediction(event_id) or {}
+            if state == "post":
+                if not existing:
+                    self.predictions_collection.update_one(
+                        {"gameId": event_id, "sport": "nfl", "phase": "missed"},
+                        {"$setOnInsert": {"gameId": event_id, "sport": "nfl", "phase": "missed", "season": season, "missed": True, "createdAt": int(time.time())}},
+                        upsert=True,
+                    )
+                    missed.append(event_id)
+                elif existing.get("settled"):
+                    skipped.append(event_id)
+                else:
+                    try:
+                        self.matchup_detail(event_id)
+                        settled.append(event_id)
+                    except Exception as error:
+                        print(f"Could not automatically grade NFL game {event_id}: {error}")
+                        errors.append(event_id)
+                continue
+            if state != "pre":
+                continue
             if existing.get("playerProjections") and all("touchdownProbability" in item.get("projected", {}) for item in existing["playerProjections"]):
                 skipped.append(event_id)
                 continue
@@ -90,7 +100,7 @@ class NFLManager:
             except Exception as error:
                 print(f"Could not automatically snapshot NFL game {event_id}: {error}")
                 errors.append(event_id)
-        return {"saved": saved, "alreadySaved": skipped, "errors": errors}
+        return {"saved": saved, "settled": settled, "missed": missed, "alreadySaved": skipped, "errors": errors}
 
     def _save_pregame_prediction(self, event_id, prediction, teams, player_projections=None):
         if self.predictions_collection is None or not event_id or prediction.get("source") != "pregame":
@@ -115,15 +125,16 @@ class NFLManager:
             return None
         row = self.predictions_collection.find_one(
             {"gameId": str(event_id), "sport": "nfl", "phase": "pregame"},
-            {"_id": 0, "prediction": 1, "playerProjections": 1},
+            {"_id": 0, "prediction": 1, "playerProjections": 1, "settled": 1, "grading": 1},
         )
         return row if row else None
 
     def accuracy(self, season=None):
         if self.predictions_collection is None:
-            return {"score": None, "wins": 0, "losses": 0, "games": {"wins": 0, "losses": 0}, "props": {"wins": 0, "losses": 0}}
+            return {"score": None, "wins": 0, "losses": 0, "games": {"wins": 0, "losses": 0, "graded": 0, "missed": 0}, "props": {"wins": 0, "losses": 0}}
         season = season or time.gmtime().tm_year
         rows = self.predictions_collection.find({"sport": "nfl", "season": season, "settled": True}, {"_id": 0, "grading": 1})
+        missed_games = self.predictions_collection.count_documents({"sport": "nfl", "season": season, "phase": "missed"})
         game_wins = game_losses = prop_wins = prop_losses = 0
         for row in rows:
             grading = row.get("grading", {})
@@ -141,7 +152,7 @@ class NFLManager:
         return {
             "score": round(wins / total * 100, 1) if total else None,
             "wins": wins, "losses": losses,
-            "games": {"wins": game_wins, "losses": game_losses},
+            "games": {"wins": game_wins, "losses": game_losses, "graded": game_wins + game_losses, "missed": missed_games},
             "props": {"wins": prop_wins, "losses": prop_losses},
         }
 

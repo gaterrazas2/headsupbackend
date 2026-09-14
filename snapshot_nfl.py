@@ -12,4 +12,4 @@ if __name__ == "__main__":
         print(f"NFL snapshot skipped for {mode} schedule")
         raise SystemExit(0)
     result = Backend().nfl.snapshot_announced_rosters()
-    print(f"NFL snapshots saved: {len(result['saved'])}; already saved: {len(result['alreadySaved'])}; errors: {len(result['errors'])}")
+    print(f"NFL snapshots saved: {len(result['saved'])}; games graded: {len(result['settled'])}; missed snapshots: {len(result['missed'])}; already processed: {len(result['alreadySaved'])}; errors: {len(result['errors'])}")
