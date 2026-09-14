@@ -20,6 +20,7 @@ class NFLManager:
     _metrics_cached_at = 0
     _power_rankings_cache = None
     _power_rankings_cached_at = 0
+    _power_rankings_2025_cache = None
 
     def __init__(self, predictions_collection=None, archives_collection=None):
         self.predictions_collection = predictions_collection
@@ -406,7 +407,7 @@ class NFLManager:
             latest = max(candidates, key=lambda article: article.get("date") or "")
             article = self._json(f"https://content.core.api.espn.com/v1/sports/news/{latest['id']}")["headlines"][0]
             rankings = {}
-            pattern = r'<h2[^>]*>\s*(\d+)\.\s*<a[^>]*?/name/([^/\"]+)[^>]*>(.*?)</a>\s*</h2>'
+            pattern = r'<h2[^>]*>\s*(\d+)\.\s*<a[^>]*?/name/([^/\"]+)[^>]*>(.*?)</a>.*?</h2>'
             for rank, abbreviation, team_name in re.findall(pattern, article.get("story", ""), re.I | re.S):
                 rankings[abbreviation.upper()] = {
                     "rank": int(rank),
@@ -426,6 +427,26 @@ class NFLManager:
             if not self._power_rankings_cache:
                 self._power_rankings_cache = {"rankings": {}, "title": None, "published": None, "link": None}
         return self._power_rankings_cache
+
+    def _espn_2025_power_rankings(self):
+        if self._power_rankings_2025_cache:
+            return self._power_rankings_2025_cache
+        try:
+            article = self._json("https://content.core.api.espn.com/v1/sports/news/47446909")["headlines"][0]
+            rankings = {}
+            pattern = r'<h2[^>]*>\s*(\d+)\.\s*<a[^>]*?/name/([^/\"]+)[^>]*>(.*?)</a>.*?</h2>'
+            for rank, abbreviation, team_name in re.findall(pattern, article.get("story", ""), re.I | re.S):
+                rankings[abbreviation.upper()] = {"rank": int(rank), "team": html.unescape(re.sub(r"<[^>]+>", "", team_name)).strip()}
+            if len(rankings) != 32:
+                raise ValueError(f"Expected 32 fixed 2025 ESPN rankings, found {len(rankings)}")
+            self._power_rankings_2025_cache = {
+                "rankings": rankings, "title": article.get("headline"), "published": article.get("published"),
+                "link": "https://www.espn.com/nfl/story/_/id/47446909/nfl-week-18-power-rankings-poll-32-teams-2025-season-lessons",
+            }
+        except Exception as error:
+            print(f"ESPN 2025 power rankings error: {error}")
+            self._power_rankings_2025_cache = {"rankings": {}, "title": None, "published": None, "link": None}
+        return self._power_rankings_2025_cache
 
     def weekly_matchups(self):
         scoreboard = self._json(f"{self.ESPN_SITE}/scoreboard?limit=50")
@@ -574,9 +595,13 @@ class NFLManager:
             teams[side] = self._team_summary(source)
 
         power_rankings = self._espn_power_rankings()
+        power_rankings_2025 = self._espn_2025_power_rankings()
         for team in teams.values():
             ranking = power_rankings["rankings"].get(team.get("abbreviation"), {})
+            fixed_ranking = power_rankings_2025["rankings"].get(team.get("abbreviation"), {})
             team["powerRank"] = ranking.get("rank")
+            team["currentPowerRank"] = ranking.get("rank")
+            team["powerRank2025"] = fixed_ranking.get("rank")
 
         injuries = {}
         unavailable_by_team = defaultdict(set)
@@ -703,6 +728,11 @@ class NFLManager:
                 "title": power_rankings.get("title"),
                 "published": power_rankings.get("published"),
                 "link": power_rankings.get("link"),
+            },
+            "powerRankings2025": {
+                "title": power_rankings_2025.get("title"),
+                "published": power_rankings_2025.get("published"),
+                "link": power_rankings_2025.get("link"),
             },
         }
 
