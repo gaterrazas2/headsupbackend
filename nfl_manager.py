@@ -94,7 +94,7 @@ class NFLManager:
                 continue
             if state != "pre":
                 continue
-            if existing.get("playerProjections") and all("touchdownProbability" in item.get("projected", {}) and "matchupEdges" in item.get("projected", {}) for item in existing["playerProjections"]):
+            if existing.get("playerProjections") and all(item.get("modelVersion") == 2 for item in existing["playerProjections"]):
                 skipped.append(event_id)
                 continue
             try:
@@ -119,7 +119,7 @@ class NFLManager:
         )
         if player_projections:
             self.predictions_collection.update_one(
-                {"gameId": str(event_id), "sport": "nfl", "phase": "pregame", "$or": [{"playerProjections": {"$exists": False}}, {"playerProjections": []}, {"playerProjections.projected.touchdownProbability": {"$exists": False}}, {"playerProjections.projected.matchupEdges": {"$exists": False}}]},
+                {"gameId": str(event_id), "sport": "nfl", "phase": "pregame", "$or": [{"playerProjections": {"$exists": False}}, {"playerProjections": []}, {"playerProjections.modelVersion": {"$ne": 2}}]},
                 {"$set": {"playerProjections": player_projections}},
             )
 
@@ -170,7 +170,7 @@ class NFLManager:
         )
         forecast = saved.get("prediction", {})
         props = []
-        relevant = {"QB": ["passingYards", "completions"], "RB": ["rushingYards", "receivingYards"], "WR": ["receptions", "receivingYards"]}
+        relevant = {"QB": ["passingYards", "completions"], "RB": ["rushingYards", "receivingYards"], "WR": ["receptions", "receivingYards"], "TE": ["receptions", "receivingYards"]}
         for player in player_comparisons:
             for stat in relevant.get(player.get("position"), []):
                 projected = player.get("projected", {}).get(stat)
@@ -193,7 +193,7 @@ class NFLManager:
 
     def _skill_projection(self, player, opponent_abbreviation, team_abbreviation=None):
         position = (player.get("position") or "").upper()
-        if position not in {"QB", "RB", "WR"}:
+        if position not in {"QB", "RB", "WR", "TE"}:
             return None
         try:
             data = self._json(f"{self.ESPN_WEB}/athletes/{player['id']}/stats?region=us&lang=en&contentorigin=espn")
@@ -205,7 +205,7 @@ class NFLManager:
         projected = {}
         matchup_edges = {}
         expected_touchdowns = 0.0
-        wanted = {"QB": {"passing"}, "RB": {"rushing", "receiving"}, "WR": {"receiving"}}[position]
+        wanted = {"QB": {"passing"}, "RB": {"rushing", "receiving"}, "WR": {"receiving"}, "TE": {"receiving"}}[position]
         for category in data.get("categories", []):
             category_name = (category.get("name") or category.get("displayName") or "").lower()
             if category_name not in wanted:
@@ -229,12 +229,12 @@ class NFLManager:
                 projected["receivingYards"] = round(self._number(stats.get("receivingYards")) / games * multiplier, 1)
                 matchup_edges["receivingYards"] = round((multiplier - 1) * 100, 1)
                 expected_touchdowns += self._number(stats.get("receivingTouchdowns")) / games * multiplier
-                if position == "WR":
+                if position in {"WR", "TE"}:
                     projected["receptions"] = round(self._number(stats.get("receptions")) / games * multiplier, 1)
                     matchup_edges["receptions"] = matchup_edges["receivingYards"]
         projected["matchupEdges"] = matchup_edges
         projected["touchdownProbability"] = round((1 - math.exp(-max(0, expected_touchdowns))) * 100, 1)
-        return {"id": str(player.get("id")), "name": player.get("name"), "team": player.get("team"), "position": position, "projected": projected}
+        return {"id": str(player.get("id")), "name": player.get("name"), "team": player.get("team"), "position": position, "projected": projected, "modelVersion": 2}
 
     def _top_prop_candidates(self, players):
         """Rank alternate player lines, allowing QB touchdowns only at 2+."""
@@ -242,6 +242,7 @@ class NFLManager:
             "QB": {"passingYards": (25, 0.25, "passing yards", 199.5)},
             "RB": {"rushingYards": (10, 0.45, "rushing yards", 39.5), "receivingYards": (10, 0.55, "receiving yards", 19.5)},
             "WR": {"receptions": (1, 0.4, "receptions", 3.5), "receivingYards": (10, 0.45, "receiving yards", 39.5)},
+            "TE": {"receptions": (1, 0.45, "receptions", 2.5), "receivingYards": (10, 0.5, "receiving yards", 29.5)},
         }
         candidates = []
         for player in players:
@@ -263,7 +264,7 @@ class NFLManager:
                 value_score = round(max(1, min(99, probability + edge * 0.5)), 1)
                 market = {"passingYards": "player_pass_yds", "rushingYards": "player_rush_yds", "receivingYards": "player_reception_yds", "receptions": "player_receptions"}[stat]
                 candidates.append({**common, "prop": f"Over {line:g} {label}", "probability": probability, "matchupEdge": edge, "valueScore": value_score, "market": market, "stat": stat, "mean": mean, "variation": variation, "label": label})
-            if position in {"RB", "WR"} and projected.get("touchdownProbability") is not None:
+            if position in {"RB", "WR", "TE"} and projected.get("touchdownProbability") is not None:
                 probability = projected["touchdownProbability"]
                 if 30 <= probability <= 75:
                     edge = max(matchup_edges.values(), default=0)
@@ -374,7 +375,7 @@ class NFLManager:
                     player_rows.setdefault(athlete_id, {"id": athlete_id, "name": athlete.get("displayName"), "team": team_abbreviation, "position": athlete.get("position", {}).get("abbreviation", ""), "actual": {}})["actual"].update(values)
             for athlete_id, row in player_rows.items():
                 position = positions.get(athlete_id) or row.get("position", "")
-                if position not in {"QB", "RB", "WR"}:
+                if position not in {"QB", "RB", "WR", "TE"}:
                     continue
                 aliases = {
                     "passingYards": ["passingYards"], "completions": ["completions", "passingCompletions"],
@@ -838,7 +839,7 @@ class NFLManager:
             with ThreadPoolExecutor(max_workers=8) as executor:
                 for side, opponent_side in (("away", "home"), ("home", "away")):
                     for player in teams[side].get("depthChart", {}).get("offense", []):
-                        if player.get("position") in {"QB", "RB", "WR"}:
+                        if player.get("position") in {"QB", "RB", "WR", "TE"}:
                             projection_jobs.append(executor.submit(self._skill_projection, player, teams[opponent_side].get("abbreviation"), teams[side].get("abbreviation")))
                 player_projections = [result for result in (job.result() for job in projection_jobs) if result and result.get("projected")]
             self._save_pregame_prediction(event_id, prediction, teams, player_projections)
@@ -1114,9 +1115,9 @@ class NFLManager:
                         expected_touchdowns += self._number(stats.get("rushingTouchdowns")) / games * opponent.get("defenseRushYpg", 110) / 110
                     if row_position in ("WR", "TE", "RB") and stats.get("receivingYards"):
                         projected["receivingYards"] = round(self._number(stats["receivingYards"]) / games * opponent.get("defensePassYpg", 220) / 220, 1)
-                        if row_position in {"WR", "RB"}:
+                        if row_position in {"WR", "RB", "TE"}:
                             expected_touchdowns += self._number(stats.get("receivingTouchdowns")) / games * opponent.get("defensePassYpg", 220) / 220
-                    if row_position == "WR" and stats.get("receptions"):
+                    if row_position in {"WR", "TE"} and stats.get("receptions"):
                         receptions_per_game = self._number(stats["receptions"]) / games
                         targets_per_game = self._number(stats.get("receivingTargets")) / games
                         receiving_yards_per_game = self._number(stats.get("receivingYards")) / games
@@ -1144,7 +1145,7 @@ class NFLManager:
                         }
 
         experience_years = athlete.get("experience", {}).get("years")
-        if position in {"QB", "RB", "WR"}:
+        if position in {"QB", "RB", "WR", "TE"}:
             projected["touchdownProbability"] = round((1 - math.exp(-max(0, expected_touchdowns))) * 100, 1)
         is_rookie = experience_years is not None and experience_years <= 1
         previous_abbreviation = latest_history_team.get("abbreviation") if latest_history_team else None
