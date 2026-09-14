@@ -17,6 +17,7 @@ class NFLManager:
     ESPN_SITE = "https://site.api.espn.com/apis/site/v2/sports/football/nfl"
     ESPN_WEB = "https://site.web.api.espn.com/apis/common/v3/sports/football/nfl"
     TEAM_STATS_URL = "https://github.com/nflverse/nflverse-data/releases/download/stats_team/stats_team_week_{season}.csv"
+    PLAYER_STATS_URL = "https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_week_{season}.csv"
     ABBR_TO_DATA = {"LAR": "LA", "WSH": "WAS"}
     _metrics_cache = {}
     _metrics_cached_at = {}
@@ -24,6 +25,8 @@ class NFLManager:
     _power_rankings_cached_at = 0
     _power_rankings_2025_cache = None
     _sportsbook_cache = {}
+    _player_stats_cache = {}
+    _player_stats_cached_at = {}
 
     def __init__(self, predictions_collection=None, archives_collection=None):
         self.predictions_collection = predictions_collection
@@ -232,7 +235,10 @@ class NFLManager:
                 if position in {"WR", "TE"}:
                     projected["receptions"] = round(self._number(stats.get("receptions")) / games * multiplier, 1)
                     matchup_edges["receptions"] = matchup_edges["receivingYards"]
+        touchdown_context = self._touchdown_context(player.get("name"), team_abbreviation, opponent_abbreviation, position)
+        expected_touchdowns = self._adjust_touchdown_rate(expected_touchdowns, touchdown_context, player.get("injury"))
         projected["matchupEdges"] = matchup_edges
+        projected["touchdownFactors"] = touchdown_context
         projected["touchdownProbability"] = round((1 - math.exp(-max(0, expected_touchdowns))) * 100, 1)
         return {"id": str(player.get("id")), "name": player.get("name"), "team": player.get("team"), "position": position, "projected": projected, "modelVersion": 2}
 
@@ -287,6 +293,88 @@ class NFLManager:
             if len(selected) == 3:
                 break
         return selected
+
+    def _player_weekly_stats(self, season=None):
+        season = season or time.gmtime().tm_year
+        if season in self._player_stats_cache and time.time() - self._player_stats_cached_at.get(season, 0) < 21600:
+            return self._player_stats_cache[season]
+        try:
+            text = self._text(self.PLAYER_STATS_URL.format(season=season))
+            rows = list(csv.DictReader(StringIO(text)))
+        except Exception as error:
+            print(f"Could not load {season} player usage stats: {error}")
+            rows = []
+        self._player_stats_cache[season] = rows
+        self._player_stats_cached_at[season] = time.time()
+        return rows
+
+    def _touchdown_context(self, player_name, team_abbreviation, opponent_abbreviation, position):
+        rows = self._player_weekly_stats()
+        previous_rows = self._player_weekly_stats(time.gmtime().tm_year - 1)
+        team_code = self.ABBR_TO_DATA.get(team_abbreviation, team_abbreviation)
+        opponent_code = self.ABBR_TO_DATA.get(opponent_abbreviation, opponent_abbreviation)
+        player_rows = [row for row in rows if row.get("team") == team_code and self._same_player(player_name, row.get("player_display_name"))]
+        if not player_rows:
+            player_rows = [row for row in previous_rows if self._same_player(player_name, row.get("player_display_name"))]
+        player_rows.sort(key=lambda row: self._number(row.get("week")))
+        if not player_rows:
+            return {}
+        touchdowns = lambda row: self._number(row.get("receiving_tds")) + self._number(row.get("rushing_tds"))
+        season_rate = sum(touchdowns(row) for row in player_rows) / len(player_rows)
+        recent_rows = player_rows[-3:]
+        recent_rate = sum(touchdowns(row) for row in recent_rows) / len(recent_rows)
+        targets_per_game = sum(self._number(row.get("targets")) for row in recent_rows) / len(recent_rows)
+        carries_per_game = sum(self._number(row.get("carries")) for row in recent_rows) / len(recent_rows)
+        target_share = sum(self._number(row.get("target_share")) for row in recent_rows) / len(recent_rows)
+        air_yards_share = sum(self._number(row.get("air_yards_share")) for row in recent_rows) / len(recent_rows)
+
+        opponent_rows = [row for row in rows if row.get("opponent_team") == opponent_code and row.get("position") == position]
+        if not opponent_rows:
+            opponent_rows = [row for row in previous_rows if row.get("opponent_team") == opponent_code and row.get("position") == position]
+        opponent_games = len({row.get("game_id") for row in opponent_rows}) or 1
+        opponent_position_tds = sum(touchdowns(row) for row in opponent_rows) / opponent_games
+        team_rows = [row for row in rows if row.get("team") == team_code and row.get("position") in {"RB", "WR", "TE"}]
+        if not team_rows:
+            team_rows = [row for row in previous_rows if row.get("team") == team_code and row.get("position") in {"RB", "WR", "TE"}]
+        team_tds = sum(touchdowns(row) for row in team_rows) or 1
+        player_td_share = sum(touchdowns(row) for row in player_rows) / team_tds
+        quarterback_rows = [row for row in rows if row.get("team") == team_code and row.get("position") == "QB"]
+        if not quarterback_rows:
+            quarterback_rows = [row for row in previous_rows if row.get("team") == team_code and row.get("position") == "QB"]
+        team_games = len({row.get("game_id") for row in quarterback_rows}) or 1
+        qb_pass_tds_per_game = sum(self._number(row.get("passing_tds")) for row in quarterback_rows) / team_games
+        return {
+            "seasonTdRate": round(season_rate, 3), "recentTdRate": round(recent_rate, 3),
+            "targetsPerGame": round(targets_per_game, 1), "carriesPerGame": round(carries_per_game, 1),
+            "targetShare": round(target_share, 3), "airYardsShare": round(air_yards_share, 3),
+            "opponentPositionTdsPerGame": round(opponent_position_tds, 3),
+            "teamTdShare": round(player_td_share, 3), "qbPassTdsPerGame": round(qb_pass_tds_per_game, 2),
+        }
+
+    def _adjust_touchdown_rate(self, base_rate, context, injury=None):
+        if not context:
+            return base_rate
+        season_rate = context.get("seasonTdRate", 0)
+        recent_rate = context.get("recentTdRate", season_rate)
+        blended_rate = base_rate * 0.45 + season_rate * 0.35 + recent_rate * 0.20
+        position = "RB" if context.get("carriesPerGame", 0) >= 5 else "receiver"
+        if position == "RB":
+            usage_factor = max(0.75, min(1.25, (context.get("carriesPerGame", 0) + context.get("targetsPerGame", 0)) / 15))
+            opponent_baseline = 0.9
+            opportunities = context.get("carriesPerGame", 0) + context.get("targetsPerGame", 0)
+            quarterback_weight = context.get("targetsPerGame", 0) / opportunities if opportunities else 0
+        else:
+            role_signal = context.get("targetShare", 0) * 0.65 + context.get("airYardsShare", 0) * 0.35
+            usage_factor = max(0.75, min(1.25, role_signal / 0.18 if role_signal else 1))
+            opponent_baseline = 0.65
+            quarterback_weight = 1
+        opponent_factor = max(0.7, min(1.35, context.get("opponentPositionTdsPerGame", opponent_baseline) / opponent_baseline))
+        quarterback_quality = max(0.8, min(1.2, context.get("qbPassTdsPerGame", 1.5) / 1.5))
+        quarterback_factor = 1 + (quarterback_quality - 1) * quarterback_weight
+        competition_factor = max(0.85, min(1.15, 0.85 + context.get("teamTdShare", 0) * 0.6))
+        injury_text = " ".join(str(value) for value in (injury or {}).values()).lower()
+        availability_factor = 0.7 if any(word in injury_text for word in ("questionable", "limited", "doubtful")) else 1.0
+        return blended_rate * usage_factor * opponent_factor * quarterback_factor * competition_factor * availability_factor
 
     @staticmethod
     def _american_decimal(price):
@@ -835,6 +923,7 @@ class NFLManager:
         pregame_prediction = saved_pregame.get("prediction") if saved_pregame else None
         live_state = competition.get("status", {}).get("type", {}).get("state", "pre")
         if live_state == "pre":
+            self._player_weekly_stats(current_stats_season)
             projection_jobs = []
             with ThreadPoolExecutor(max_workers=8) as executor:
                 for side, opponent_side in (("away", "home"), ("home", "away")):
@@ -1145,6 +1234,9 @@ class NFLManager:
                         }
 
         experience_years = athlete.get("experience", {}).get("years")
+        if position in {"RB", "WR", "TE"}:
+            touchdown_context = self._touchdown_context(athlete.get("displayName") or athlete.get("fullName"), team_abbreviation, opponent_abbreviation, position)
+            expected_touchdowns = self._adjust_touchdown_rate(expected_touchdowns, touchdown_context)
         if position in {"QB", "RB", "WR", "TE"}:
             projected["touchdownProbability"] = round((1 - math.exp(-max(0, expected_touchdowns))) * 100, 1)
         is_rookie = experience_years is not None and experience_years <= 1
