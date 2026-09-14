@@ -224,7 +224,7 @@ class NFLManager:
         return {"id": str(player.get("id")), "name": player.get("name"), "team": player.get("team"), "position": position, "projected": projected}
 
     def _top_prop_candidates(self, players):
-        """Rank conservative alternate player lines; QB touchdown props are intentionally excluded."""
+        """Rank alternate player lines, allowing QB touchdowns only at 2+."""
         configurations = {
             "QB": {"passingYards": (25, 0.9, 0.25, "passing yards")},
             "RB": {"rushingYards": (10, 0.9, 0.45, "rushing yards"), "receivingYards": (10, 0.9, 0.55, "receiving yards")},
@@ -245,6 +245,12 @@ class NFLManager:
                 candidates.append({**common, "prop": f"Over {line:g} {label}", "probability": round(probability * 100, 1)})
             if position in {"RB", "WR"} and projected.get("touchdownProbability") is not None:
                 candidates.append({**common, "prop": "Anytime touchdown", "probability": projected["touchdownProbability"]})
+            if position == "QB" and projected.get("touchdownProbability") is not None:
+                one_plus_probability = min(0.999, max(0.0, self._number(projected["touchdownProbability"]) / 100))
+                expected_touchdowns = -math.log(1 - one_plus_probability)
+                two_plus_probability = 1 - math.exp(-expected_touchdowns) * (1 + expected_touchdowns)
+                if two_plus_probability >= 0.5:
+                    candidates.append({**common, "prop": "2+ passing touchdowns", "probability": round(two_plus_probability * 100, 1)})
         return sorted(candidates, key=lambda item: item["probability"], reverse=True)[:3]
 
     def _actual_skill_stats(self, summary, positions, injuries):
