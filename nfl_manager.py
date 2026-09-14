@@ -223,6 +223,30 @@ class NFLManager:
         projected["touchdownProbability"] = round((1 - math.exp(-max(0, expected_touchdowns))) * 100, 1)
         return {"id": str(player.get("id")), "name": player.get("name"), "team": player.get("team"), "position": position, "projected": projected}
 
+    def _top_prop_candidates(self, players):
+        """Rank conservative alternate player lines; QB touchdown props are intentionally excluded."""
+        configurations = {
+            "QB": {"passingYards": (25, 0.9, 0.25, "passing yards")},
+            "RB": {"rushingYards": (10, 0.9, 0.45, "rushing yards"), "receivingYards": (10, 0.9, 0.55, "receiving yards")},
+            "WR": {"receptions": (1, 0.9, 0.4, "receptions"), "receivingYards": (10, 0.9, 0.45, "receiving yards")},
+        }
+        candidates = []
+        for player in players:
+            position = player.get("position")
+            projected = player.get("projected", {})
+            common = {"playerId": player.get("id"), "player": player.get("name"), "team": player.get("team"), "position": position}
+            for stat, (step, ratio, variation, label) in configurations.get(position, {}).items():
+                mean = self._number(projected.get(stat))
+                if mean <= 0:
+                    continue
+                line = max(step - 0.5, math.floor(mean * ratio / step) * step - 0.5)
+                deviation = max(step, mean * variation)
+                probability = 0.5 * (1 + math.erf((mean - line) / (deviation * math.sqrt(2))))
+                candidates.append({**common, "prop": f"Over {line:g} {label}", "probability": round(probability * 100, 1)})
+            if position in {"RB", "WR"} and projected.get("touchdownProbability") is not None:
+                candidates.append({**common, "prop": "Anytime touchdown", "probability": projected["touchdownProbability"]})
+        return sorted(candidates, key=lambda item: item["probability"], reverse=True)[:3]
+
     def _actual_skill_stats(self, summary, positions, injuries):
         comparisons = []
         for team_group in (summary.get("boxscore", {}).get("players") or []):
@@ -727,18 +751,7 @@ class NFLManager:
                 player_comparisons.append(actual)
             self._settle_prediction(event_id, summary, prediction, teams, player_comparisons)
         snapshot_players = (saved_pregame or {}).get("playerProjections", [])
-        top_props = sorted(
-            [
-                {
-                    "playerId": item.get("id"), "player": item.get("name"), "team": item.get("team"), "position": item.get("position"),
-                    "prop": "Passing touchdown" if item.get("position") == "QB" else "Anytime touchdown",
-                    "probability": item.get("projected", {}).get("touchdownProbability"),
-                }
-                for item in snapshot_players
-                if item.get("projected", {}).get("touchdownProbability") is not None
-            ],
-            key=lambda item: item["probability"], reverse=True,
-        )[:3]
+        top_props = self._top_prop_candidates(snapshot_players)
         articles = summary.get("news") or []
         if isinstance(articles, dict):
             articles = articles.get("articles", [])
