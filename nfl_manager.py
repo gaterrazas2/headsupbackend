@@ -97,7 +97,7 @@ class NFLManager:
                 continue
             if state != "pre":
                 continue
-            if existing.get("playerProjections") and all(item.get("modelVersion") == 2 for item in existing["playerProjections"]):
+            if existing.get("playerProjections") and all(item.get("modelVersion") == 3 for item in existing["playerProjections"]):
                 skipped.append(event_id)
                 continue
             try:
@@ -122,7 +122,7 @@ class NFLManager:
         )
         if player_projections:
             self.predictions_collection.update_one(
-                {"gameId": str(event_id), "sport": "nfl", "phase": "pregame", "$or": [{"playerProjections": {"$exists": False}}, {"playerProjections": []}, {"playerProjections.modelVersion": {"$ne": 2}}]},
+                {"gameId": str(event_id), "sport": "nfl", "phase": "pregame", "$or": [{"playerProjections": {"$exists": False}}, {"playerProjections": []}, {"playerProjections.modelVersion": {"$ne": 3}}]},
                 {"$set": {"playerProjections": player_projections}},
             )
 
@@ -240,7 +240,7 @@ class NFLManager:
         projected["matchupEdges"] = matchup_edges
         projected["touchdownFactors"] = touchdown_context
         projected["touchdownProbability"] = round((1 - math.exp(-max(0, expected_touchdowns))) * 100, 1)
-        return {"id": str(player.get("id")), "name": player.get("name"), "team": player.get("team"), "position": position, "projected": projected, "modelVersion": 2}
+        return {"id": str(player.get("id")), "name": player.get("name"), "team": player.get("team"), "position": position, "projected": projected, "modelVersion": 3}
 
     def _top_prop_candidates(self, players):
         """Rank alternate player lines, allowing QB touchdowns only at 2+."""
@@ -313,42 +313,51 @@ class NFLManager:
         previous_rows = self._player_weekly_stats(time.gmtime().tm_year - 1)
         team_code = self.ABBR_TO_DATA.get(team_abbreviation, team_abbreviation)
         opponent_code = self.ABBR_TO_DATA.get(opponent_abbreviation, opponent_abbreviation)
-        player_rows = [row for row in rows if row.get("team") == team_code and self._same_player(player_name, row.get("player_display_name"))]
-        if not player_rows:
-            player_rows = [row for row in previous_rows if self._same_player(player_name, row.get("player_display_name"))]
-        player_rows.sort(key=lambda row: self._number(row.get("week")))
-        if not player_rows:
+        current_player_rows = [row for row in rows if row.get("team") == team_code and self._same_player(player_name, row.get("player_display_name"))]
+        prior_player_rows = [row for row in previous_rows if self._same_player(player_name, row.get("player_display_name"))]
+        current_player_rows.sort(key=lambda row: self._number(row.get("week")))
+        prior_player_rows.sort(key=lambda row: self._number(row.get("week")))
+        if not current_player_rows and not prior_player_rows:
             return {}
         touchdowns = lambda row: self._number(row.get("receiving_tds")) + self._number(row.get("rushing_tds"))
-        season_rate = sum(touchdowns(row) for row in player_rows) / len(player_rows)
-        recent_rows = player_rows[-3:]
-        recent_rate = sum(touchdowns(row) for row in recent_rows) / len(recent_rows)
+        position_baseline = {"RB": 0.35, "WR": 0.28, "TE": 0.22}.get(position, 0.25)
+        prior_rate = sum(touchdowns(row) for row in prior_player_rows) / len(prior_player_rows) if prior_player_rows else position_baseline
+        prior_weight = min(6, len(prior_player_rows)) if prior_player_rows else 4
+        season_rate = (sum(touchdowns(row) for row in current_player_rows) + prior_rate * prior_weight) / (len(current_player_rows) + prior_weight)
+        current_recent = current_player_rows[-3:]
+        recent_source = (prior_player_rows[-max(0, 3 - len(current_recent)):] + current_recent)[-3:]
+        recent_rate = (sum(touchdowns(row) for row in recent_source) + season_rate * 2) / (len(recent_source) + 2)
+        recent_rows = recent_source
         targets_per_game = sum(self._number(row.get("targets")) for row in recent_rows) / len(recent_rows)
         carries_per_game = sum(self._number(row.get("carries")) for row in recent_rows) / len(recent_rows)
         target_share = sum(self._number(row.get("target_share")) for row in recent_rows) / len(recent_rows)
         air_yards_share = sum(self._number(row.get("air_yards_share")) for row in recent_rows) / len(recent_rows)
 
-        opponent_rows = [row for row in rows if row.get("opponent_team") == opponent_code and row.get("position") == position]
-        if not opponent_rows:
-            opponent_rows = [row for row in previous_rows if row.get("opponent_team") == opponent_code and row.get("position") == position]
-        opponent_games = len({row.get("game_id") for row in opponent_rows}) or 1
-        opponent_position_tds = sum(touchdowns(row) for row in opponent_rows) / opponent_games
+        current_opponent_rows = [row for row in rows if row.get("opponent_team") == opponent_code and row.get("position") == position]
+        prior_opponent_rows = [row for row in previous_rows if row.get("opponent_team") == opponent_code and row.get("position") == position]
+        current_opponent_games = len({row.get("game_id") for row in current_opponent_rows})
+        prior_opponent_games = len({row.get("game_id") for row in prior_opponent_rows}) or 1
+        prior_opponent_rate = sum(touchdowns(row) for row in prior_opponent_rows) / prior_opponent_games if prior_opponent_rows else position_baseline
+        defense_prior_weight = min(4, prior_opponent_games)
+        opponent_position_tds = (sum(touchdowns(row) for row in current_opponent_rows) + prior_opponent_rate * defense_prior_weight) / (current_opponent_games + defense_prior_weight)
         team_rows = [row for row in rows if row.get("team") == team_code and row.get("position") in {"RB", "WR", "TE"}]
         if not team_rows:
             team_rows = [row for row in previous_rows if row.get("team") == team_code and row.get("position") in {"RB", "WR", "TE"}]
         team_tds = sum(touchdowns(row) for row in team_rows) or 1
-        player_td_share = sum(touchdowns(row) for row in player_rows) / team_tds
-        quarterback_rows = [row for row in rows if row.get("team") == team_code and row.get("position") == "QB"]
-        if not quarterback_rows:
-            quarterback_rows = [row for row in previous_rows if row.get("team") == team_code and row.get("position") == "QB"]
-        team_games = len({row.get("game_id") for row in quarterback_rows}) or 1
-        qb_pass_tds_per_game = sum(self._number(row.get("passing_tds")) for row in quarterback_rows) / team_games
+        player_td_share = (sum(touchdowns(row) for row in current_player_rows) if current_player_rows else sum(touchdowns(row) for row in prior_player_rows)) / team_tds
+        current_quarterbacks = [row for row in rows if row.get("team") == team_code and row.get("position") == "QB"]
+        prior_quarterbacks = [row for row in previous_rows if row.get("team") == team_code and row.get("position") == "QB"]
+        current_team_games = len({row.get("game_id") for row in current_quarterbacks})
+        prior_team_games = len({row.get("game_id") for row in prior_quarterbacks}) or 1
+        prior_qb_rate = sum(self._number(row.get("passing_tds")) for row in prior_quarterbacks) / prior_team_games if prior_quarterbacks else 1.5
+        qb_prior_weight = min(4, prior_team_games)
+        qb_pass_tds_per_game = (sum(self._number(row.get("passing_tds")) for row in current_quarterbacks) + prior_qb_rate * qb_prior_weight) / (current_team_games + qb_prior_weight)
         return {
             "seasonTdRate": round(season_rate, 3), "recentTdRate": round(recent_rate, 3),
             "targetsPerGame": round(targets_per_game, 1), "carriesPerGame": round(carries_per_game, 1),
             "targetShare": round(target_share, 3), "airYardsShare": round(air_yards_share, 3),
             "opponentPositionTdsPerGame": round(opponent_position_tds, 3),
-            "teamTdShare": round(player_td_share, 3), "qbPassTdsPerGame": round(qb_pass_tds_per_game, 2),
+            "teamTdShare": round(player_td_share, 3), "qbPassTdsPerGame": round(qb_pass_tds_per_game, 2), "positionBaseline": position_baseline,
         }
 
     def _adjust_touchdown_rate(self, base_rate, context, injury=None):
@@ -356,25 +365,25 @@ class NFLManager:
             return base_rate
         season_rate = context.get("seasonTdRate", 0)
         recent_rate = context.get("recentTdRate", season_rate)
-        blended_rate = base_rate * 0.45 + season_rate * 0.35 + recent_rate * 0.20
+        blended_rate = base_rate * 0.35 + season_rate * 0.45 + recent_rate * 0.20
         position = "RB" if context.get("carriesPerGame", 0) >= 5 else "receiver"
         if position == "RB":
-            usage_factor = max(0.75, min(1.25, (context.get("carriesPerGame", 0) + context.get("targetsPerGame", 0)) / 15))
-            opponent_baseline = 0.9
+            usage_factor = max(0.8, min(1.2, (context.get("carriesPerGame", 0) + context.get("targetsPerGame", 0)) / 15))
+            opponent_baseline = context.get("positionBaseline", 0.35)
             opportunities = context.get("carriesPerGame", 0) + context.get("targetsPerGame", 0)
             quarterback_weight = context.get("targetsPerGame", 0) / opportunities if opportunities else 0
         else:
             role_signal = context.get("targetShare", 0) * 0.65 + context.get("airYardsShare", 0) * 0.35
-            usage_factor = max(0.75, min(1.25, role_signal / 0.18 if role_signal else 1))
-            opponent_baseline = 0.65
+            usage_factor = max(0.8, min(1.2, role_signal / 0.18 if role_signal else 1))
+            opponent_baseline = context.get("positionBaseline", 0.25)
             quarterback_weight = 1
-        opponent_factor = max(0.7, min(1.35, context.get("opponentPositionTdsPerGame", opponent_baseline) / opponent_baseline))
-        quarterback_quality = max(0.8, min(1.2, context.get("qbPassTdsPerGame", 1.5) / 1.5))
+        opponent_factor = max(0.8, min(1.25, context.get("opponentPositionTdsPerGame", opponent_baseline) / opponent_baseline))
+        quarterback_quality = max(0.85, min(1.15, context.get("qbPassTdsPerGame", 1.5) / 1.5))
         quarterback_factor = 1 + (quarterback_quality - 1) * quarterback_weight
-        competition_factor = max(0.85, min(1.15, 0.85 + context.get("teamTdShare", 0) * 0.6))
+        competition_factor = max(0.9, min(1.1, 0.9 + context.get("teamTdShare", 0) * 0.4))
         injury_text = " ".join(str(value) for value in (injury or {}).values()).lower()
-        availability_factor = 0.7 if any(word in injury_text for word in ("questionable", "limited", "doubtful")) else 1.0
-        return blended_rate * usage_factor * opponent_factor * quarterback_factor * competition_factor * availability_factor
+        availability_factor = 0.75 if any(word in injury_text for word in ("questionable", "limited", "doubtful")) else 1.0
+        return max(0.01, min(0.9, blended_rate * usage_factor * opponent_factor * quarterback_factor * competition_factor * availability_factor))
 
     @staticmethod
     def _american_decimal(price):
