@@ -86,7 +86,7 @@ class NFLManager:
                     skipped.append(event_id)
                 else:
                     try:
-                        self.matchup_detail(event_id)
+                        self.matchup_detail(event_id, include_sportsbook=False)
                         settled.append(event_id)
                     except Exception as error:
                         print(f"Could not automatically grade NFL game {event_id}: {error}")
@@ -98,7 +98,7 @@ class NFLManager:
                 skipped.append(event_id)
                 continue
             try:
-                self.matchup_detail(event_id)
+                self.matchup_detail(event_id, include_sportsbook=False)
                 saved.append(event_id)
             except Exception as error:
                 print(f"Could not automatically snapshot NFL game {event_id}: {error}")
@@ -128,7 +128,7 @@ class NFLManager:
             return None
         row = self.predictions_collection.find_one(
             {"gameId": str(event_id), "sport": "nfl", "phase": "pregame"},
-            {"_id": 0, "prediction": 1, "playerProjections": 1, "settled": 1, "grading": 1},
+            {"_id": 0, "prediction": 1, "playerProjections": 1, "settled": 1, "grading": 1, "sportsbookTopProps": 1, "sportsbookTopPropsStatus": 1, "sportsbookTopPropsCheckedAt": 1},
         )
         return row if row else None
 
@@ -772,7 +772,7 @@ class NFLManager:
             })
         return starters[:12]
 
-    def matchup_detail(self, event_id):
+    def matchup_detail(self, event_id, include_sportsbook=True):
         summary = self._json(f"{self.ESPN_SITE}/summary?event={event_id}")
         competition = (summary.get("header", {}).get("competitions") or [{}])[0]
         competitors = {item.get("homeAway"): item for item in competition.get("competitors", [])}
@@ -865,8 +865,18 @@ class NFLManager:
             self._settle_prediction(event_id, summary, prediction, teams, player_comparisons)
         snapshot_players = (saved_pregame or {}).get("playerProjections", [])
         model_prop_candidates = self._top_prop_candidates(snapshot_players)
-        if live_state == "pre":
+        if live_state == "pre" and saved_pregame and saved_pregame.get("sportsbookTopPropsCheckedAt"):
+            top_props = saved_pregame.get("sportsbookTopProps", [])
+            top_props_status = saved_pregame.get("sportsbookTopPropsStatus")
+        elif live_state == "pre" and include_sportsbook:
             top_props, top_props_status = self._sportsbook_value_props(teams, model_prop_candidates)
+            if self.predictions_collection is not None and saved_pregame:
+                self.predictions_collection.update_one(
+                    {"gameId": str(event_id), "sport": "nfl", "phase": "pregame"},
+                    {"$set": {"sportsbookTopProps": top_props, "sportsbookTopPropsStatus": top_props_status, "sportsbookTopPropsCheckedAt": int(time.time())}},
+                )
+        elif live_state == "pre":
+            top_props, top_props_status = [], "Open this matchup on the website to check sportsbook value props."
         else:
             top_props, top_props_status = [], None
         articles = summary.get("news") or []
