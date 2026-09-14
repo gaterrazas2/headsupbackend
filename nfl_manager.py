@@ -2,12 +2,14 @@ import csv
 import html
 import json
 import math
+import os
 import re
 import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from io import StringIO
 from urllib.error import HTTPError
+from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 
@@ -21,6 +23,7 @@ class NFLManager:
     _power_rankings_cache = None
     _power_rankings_cached_at = 0
     _power_rankings_2025_cache = None
+    _sportsbook_cache = {}
 
     def __init__(self, predictions_collection=None, archives_collection=None):
         self.predictions_collection = predictions_collection
@@ -258,12 +261,13 @@ class NFLManager:
                 probability = round(probability * 100, 1)
                 edge = self._number(matchup_edges.get(stat))
                 value_score = round(max(1, min(99, probability + edge * 0.5)), 1)
-                candidates.append({**common, "prop": f"Over {line:g} {label}", "probability": probability, "matchupEdge": edge, "valueScore": value_score})
+                market = {"passingYards": "player_pass_yds", "rushingYards": "player_rush_yds", "receivingYards": "player_reception_yds", "receptions": "player_receptions"}[stat]
+                candidates.append({**common, "prop": f"Over {line:g} {label}", "probability": probability, "matchupEdge": edge, "valueScore": value_score, "market": market, "stat": stat, "mean": mean, "variation": variation, "label": label})
             if position in {"RB", "WR"} and projected.get("touchdownProbability") is not None:
                 probability = projected["touchdownProbability"]
                 if 30 <= probability <= 75:
                     edge = max(matchup_edges.values(), default=0)
-                    candidates.append({**common, "prop": "Anytime touchdown", "probability": probability, "matchupEdge": edge, "valueScore": round(probability + edge * 0.5, 1)})
+                    candidates.append({**common, "prop": "Anytime touchdown", "probability": probability, "matchupEdge": edge, "valueScore": round(probability + edge * 0.5, 1), "market": "player_anytime_td", "stat": "touchdown"})
             if position == "QB" and projected.get("touchdownProbability") is not None:
                 one_plus_probability = min(0.999, max(0.0, self._number(projected["touchdownProbability"]) / 100))
                 expected_touchdowns = -math.log(1 - one_plus_probability)
@@ -271,7 +275,7 @@ class NFLManager:
                 if two_plus_probability >= 0.5:
                     probability = round(two_plus_probability * 100, 1)
                     edge = self._number(matchup_edges.get("passingYards"))
-                    candidates.append({**common, "prop": "2+ passing touchdowns", "probability": probability, "matchupEdge": edge, "valueScore": round(probability + edge * 0.5, 1)})
+                    candidates.append({**common, "prop": "2+ passing touchdowns", "probability": probability, "matchupEdge": edge, "valueScore": round(probability + edge * 0.5, 1), "market": "player_pass_tds", "stat": "passingTouchdowns", "mean": expected_touchdowns})
         ranked = sorted(candidates, key=lambda item: item["valueScore"], reverse=True)
         selected, used_players = [], set()
         for candidate in ranked:
@@ -282,6 +286,79 @@ class NFLManager:
             if len(selected) == 3:
                 break
         return selected
+
+    @staticmethod
+    def _american_decimal(price):
+        return 1 + (price / 100 if price > 0 else 100 / abs(price))
+
+    @staticmethod
+    def _same_player(left, right):
+        normalize = lambda value: re.sub(r"[^a-z0-9 ]", "", (value or "").lower()).split()
+        a, b = normalize(left), normalize(right)
+        return bool(a and b and (a == b or (a[-1] == b[-1] and a[0][0] == b[0][0])))
+
+    def _sportsbook_value_props(self, teams, candidates):
+        api_key = os.environ.get("ODDS_API_KEY")
+        if not api_key or not candidates:
+            return [], "Sportsbook lines are not available yet."
+        markets = sorted({candidate["market"] for candidate in candidates})
+        cache_key = (teams["away"].get("name"), teams["home"].get("name"), tuple(markets))
+        cached = self._sportsbook_cache.get(cache_key)
+        if cached and time.time() - cached["time"] < 600:
+            odds = cached["odds"]
+        else:
+            try:
+                events_url = f"https://api.the-odds-api.com/v4/sports/americanfootball_nfl/events?{urlencode({'apiKey': api_key})}"
+                events = self._json(events_url)
+                event = next((item for item in events if item.get("home_team") == teams["home"].get("name") and item.get("away_team") == teams["away"].get("name")), None)
+                if not event:
+                    return [], "Sportsbook lines are not available for this matchup yet."
+                params = urlencode({"apiKey": api_key, "regions": "us", "markets": ",".join(markets), "oddsFormat": "american"})
+                odds = self._json(f"https://api.the-odds-api.com/v4/sports/americanfootball_nfl/events/{event['id']}/odds?{params}")
+                self._sportsbook_cache[cache_key] = {"time": time.time(), "odds": odds}
+            except Exception as error:
+                print(f"Could not load NFL player prop odds: {error}")
+                return [], "Sportsbook lines could not be loaded right now."
+
+        priced = []
+        for candidate in candidates:
+            best = None
+            for bookmaker in odds.get("bookmakers", []):
+                for market in bookmaker.get("markets", []):
+                    if market.get("key") != candidate["market"]:
+                        continue
+                    for outcome in market.get("outcomes", []):
+                        described_player = outcome.get("description") or (outcome.get("name") if candidate["market"] == "player_anytime_td" else "")
+                        if not self._same_player(candidate["player"], described_player):
+                            continue
+                        if candidate["market"] != "player_anytime_td" and outcome.get("name") != "Over":
+                            continue
+                        point = self._number(outcome.get("point"))
+                        if candidate["market"] == "player_pass_tds" and point < 1.5:
+                            continue
+                        price = self._number(outcome.get("price"))
+                        if not price:
+                            continue
+                        if candidate["stat"] == "touchdown":
+                            probability = candidate["probability"] / 100
+                            prop = "Anytime touchdown"
+                        elif candidate["stat"] == "passingTouchdowns":
+                            expected = candidate["mean"]
+                            required = math.floor(point) + 1
+                            probability = 1 - sum(math.exp(-expected) * expected ** count / math.factorial(count) for count in range(required))
+                            prop = f"{required}+ passing touchdowns"
+                        else:
+                            deviation = max(1, candidate["mean"] * candidate["variation"])
+                            probability = 0.5 * (1 + math.erf((candidate["mean"] - point) / (deviation * math.sqrt(2))))
+                            prop = f"Over {point:g} {candidate['label']}"
+                        expected_value = probability * self._american_decimal(price) - 1
+                        offer = {**candidate, "prop": prop, "probability": round(probability * 100, 1), "sportsbook": bookmaker.get("title"), "odds": f"{int(price):+d}", "expectedValue": round(expected_value * 100, 1)}
+                        if best is None or offer["expectedValue"] > best["expectedValue"]:
+                            best = offer
+            if best and best["expectedValue"] > 0:
+                priced.append(best)
+        priced.sort(key=lambda item: (item["expectedValue"], item["probability"]), reverse=True)
+        return priced[:3], None if priced else "No positive-value sportsbook props are available for this matchup right now."
 
     def _actual_skill_stats(self, summary, positions, injuries):
         comparisons = []
@@ -787,7 +864,11 @@ class NFLManager:
                 player_comparisons.append(actual)
             self._settle_prediction(event_id, summary, prediction, teams, player_comparisons)
         snapshot_players = (saved_pregame or {}).get("playerProjections", [])
-        top_props = self._top_prop_candidates(snapshot_players)
+        model_prop_candidates = self._top_prop_candidates(snapshot_players)
+        if live_state == "pre":
+            top_props, top_props_status = self._sportsbook_value_props(teams, model_prop_candidates)
+        else:
+            top_props, top_props_status = [], None
         articles = summary.get("news") or []
         if isinstance(articles, dict):
             articles = articles.get("articles", [])
@@ -832,6 +913,7 @@ class NFLManager:
             "pregamePrediction": pregame_prediction,
             "playerComparisons": player_comparisons,
             "topProps": top_props,
+            "topPropsStatus": top_props_status,
             "gameState": live_state,
             "weather": (summary.get("gameInfo") or {}).get("weather") or summary.get("weather"),
             "articles": [
