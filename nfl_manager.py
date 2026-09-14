@@ -1072,16 +1072,23 @@ class NFLManager:
                 ]
                 games_played = self._number(stats.get("gamesPlayed"))
                 category_name = (category.get("name") or category.get("displayName") or "").lower()
-                per_game_stat = None
+                per_game_stats = []
                 if games_played:
                     if category_name == "passing" and position == "QB" and self._number(stats.get("passingYards")):
-                        per_game_stat = {"name": "Passing Yards Per Game", "value": round(self._number(stats["passingYards"]) / games_played, 1)}
-                    elif category_name == "rushing" and position in {"QB", "RB", "FB"} and self._number(stats.get("rushingYards")):
-                        per_game_stat = {"name": "Rushing Yards Per Game", "value": round(self._number(stats["rushingYards"]) / games_played, 1)}
-                    elif category_name == "receiving" and position in {"RB", "FB", "WR", "TE"} and self._number(stats.get("receivingYards")):
-                        per_game_stat = {"name": "Receiving Yards Per Game", "value": round(self._number(stats["receivingYards"]) / games_played, 1)}
-                if per_game_stat:
-                    useful.insert(1 if useful and useful[0]["name"] == "Games Played" else 0, per_game_stat)
+                        per_game_stats.append({"name": "Passing Yards Per Game", "value": round(self._number(stats["passingYards"]) / games_played, 1)})
+                    elif category_name == "rushing" and position in {"QB", "RB", "FB"}:
+                        if self._number(stats.get("rushingYards")):
+                            per_game_stats.append({"name": "Rushing Yards Per Game", "value": round(self._number(stats["rushingYards"]) / games_played, 1)})
+                        if self._number(stats.get("rushingAttempts")):
+                            per_game_stats.append({"name": "Rushing Attempts Per Game", "value": round(self._number(stats["rushingAttempts"]) / games_played, 1)})
+                    elif category_name == "receiving" and position in {"RB", "FB", "WR", "TE"}:
+                        if self._number(stats.get("receivingYards")):
+                            per_game_stats.append({"name": "Receiving Yards Per Game", "value": round(self._number(stats["receivingYards"]) / games_played, 1)})
+                        if self._number(stats.get("receptions")):
+                            per_game_stats.append({"name": "Receptions Per Game", "value": round(self._number(stats["receptions"]) / games_played, 1)})
+                if per_game_stats:
+                    insertion_index = 1 if useful and useful[0]["name"] == "Games Played" else 0
+                    useful[insertion_index:insertion_index] = per_game_stats
                 if defensive_line:
                     for stat in useful:
                         if stat["name"].lower() == "stuffs":
