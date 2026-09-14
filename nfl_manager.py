@@ -6,6 +6,7 @@ import re
 import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from io import StringIO
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -61,6 +62,35 @@ class NFLManager:
         if current_week:
             query["week"] = {"$lt": current_week}
         return list(self.archives_collection.find(query, {"_id": 0}).sort("week", -1))
+
+    def snapshot_announced_rosters(self):
+        """Save props shortly after NFL active rosters are normally announced."""
+        scoreboard = self._json(f"{self.ESPN_SITE}/scoreboard?limit=50")
+        now = datetime.now(timezone.utc)
+        saved, skipped, errors = [], [], []
+        for event in scoreboard.get("events", []):
+            if event.get("status", {}).get("type", {}).get("state") != "pre":
+                continue
+            try:
+                kickoff = datetime.fromisoformat((event.get("date") or "").replace("Z", "+00:00"))
+                minutes_to_kickoff = (kickoff - now).total_seconds() / 60
+            except (TypeError, ValueError):
+                continue
+            # NFL clubs publish inactive/active lists 90 minutes before kickoff.
+            if not 0 <= minutes_to_kickoff <= 85:
+                continue
+            event_id = str(event.get("id"))
+            existing = self._saved_pregame_prediction(event_id) or {}
+            if existing.get("playerProjections"):
+                skipped.append(event_id)
+                continue
+            try:
+                self.matchup_detail(event_id)
+                saved.append(event_id)
+            except Exception as error:
+                print(f"Could not automatically snapshot NFL game {event_id}: {error}")
+                errors.append(event_id)
+        return {"saved": saved, "alreadySaved": skipped, "errors": errors}
 
     def _save_pregame_prediction(self, event_id, prediction, teams, player_projections=None):
         if self.predictions_collection is None or not event_id or prediction.get("source") != "pregame":
