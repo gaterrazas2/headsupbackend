@@ -709,6 +709,19 @@ class NFLManager:
                 actual["projected"] = forecast_player.get("projected", {})
                 player_comparisons.append(actual)
             self._settle_prediction(event_id, summary, prediction, teams, player_comparisons)
+        snapshot_players = (saved_pregame or {}).get("playerProjections", [])
+        top_props = sorted(
+            [
+                {
+                    "playerId": item.get("id"), "player": item.get("name"), "team": item.get("team"), "position": item.get("position"),
+                    "prop": "Passing touchdown" if item.get("position") == "QB" else "Anytime touchdown",
+                    "probability": item.get("projected", {}).get("touchdownProbability"),
+                }
+                for item in snapshot_players
+                if item.get("projected", {}).get("touchdownProbability") is not None
+            ],
+            key=lambda item: item["probability"], reverse=True,
+        )[:3]
         articles = summary.get("news") or []
         if isinstance(articles, dict):
             articles = articles.get("articles", [])
@@ -752,6 +765,7 @@ class NFLManager:
             "prediction": prediction,
             "pregamePrediction": pregame_prediction,
             "playerComparisons": player_comparisons,
+            "topProps": top_props,
             "gameState": live_state,
             "weather": (summary.get("gameInfo") or {}).get("weather") or summary.get("weather"),
             "articles": [
