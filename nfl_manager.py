@@ -15,10 +15,10 @@ from urllib.request import Request, urlopen
 class NFLManager:
     ESPN_SITE = "https://site.api.espn.com/apis/site/v2/sports/football/nfl"
     ESPN_WEB = "https://site.web.api.espn.com/apis/common/v3/sports/football/nfl"
-    TEAM_STATS_URL = "https://github.com/nflverse/nflverse-data/releases/download/stats_team/stats_team_week_2025.csv"
+    TEAM_STATS_URL = "https://github.com/nflverse/nflverse-data/releases/download/stats_team/stats_team_week_{season}.csv"
     ABBR_TO_DATA = {"LAR": "LA", "WSH": "WAS"}
-    _metrics_cache = None
-    _metrics_cached_at = 0
+    _metrics_cache = {}
+    _metrics_cached_at = {}
     _power_rankings_cache = None
     _power_rankings_cached_at = 0
     _power_rankings_2025_cache = None
@@ -349,11 +349,14 @@ class NFLManager:
         with urlopen(request, timeout=30) as response:
             return response.read().decode("utf-8")
 
-    def _team_metrics(self):
-        if self._metrics_cache and time.time() - self._metrics_cached_at < 21600:
-            return self._metrics_cache
+    def _team_metrics(self, season=2025):
+        season = int(season or 2025)
+        cached = self._metrics_cache.get(season)
+        cached_at = self._metrics_cached_at.get(season, 0)
+        if cached and (season == 2025 or time.time() - cached_at < 21600):
+            return cached
 
-        rows = [row for row in csv.DictReader(StringIO(self._text(self.TEAM_STATS_URL))) if row.get("season_type") == "REG"]
+        rows = [row for row in csv.DictReader(StringIO(self._text(self.TEAM_STATS_URL.format(season=season)))) if row.get("season_type") == "REG"]
         offense = defaultdict(lambda: {"games": 0, "pass": 0.0, "rush": 0.0, "epa": 0.0, "plays": 0.0, "turnovers": 0.0, "special": 0.0})
         defense = defaultdict(lambda: {"games": 0, "pass": 0.0, "rush": 0.0, "epa": 0.0, "plays": 0.0, "takeaways": 0.0})
         for row in rows:
@@ -416,13 +419,13 @@ class NFLManager:
             for rank, team in enumerate(ordered, 1):
                 metrics[team][rank_name] = rank
 
-        self._metrics_cache = metrics
-        self._metrics_cached_at = time.time()
+        self._metrics_cache[season] = metrics
+        self._metrics_cached_at[season] = time.time()
         return metrics
 
-    def _metric_for(self, abbreviation):
+    def _metric_for(self, abbreviation, season=2025):
         key = self.ABBR_TO_DATA.get(abbreviation, abbreviation)
-        return self._team_metrics().get(key, {})
+        return self._team_metrics(season).get(key, {})
 
     def _espn_power_rankings(self):
         if self._power_rankings_cache and time.time() - self._power_rankings_cached_at < 21600:
@@ -625,6 +628,7 @@ class NFLManager:
         summary = self._json(f"{self.ESPN_SITE}/summary?event={event_id}")
         competition = (summary.get("header", {}).get("competitions") or [{}])[0]
         competitors = {item.get("homeAway"): item for item in competition.get("competitors", [])}
+        current_stats_season = (summary.get("header", {}).get("season") or {}).get("year") or time.gmtime().tm_year
         teams = {}
         for side in ("away", "home"):
             source = competitors.get(side, {}).get("team", {})
@@ -668,7 +672,9 @@ class NFLManager:
             depth = {side: future.result() for side, future in futures.items()}
 
         for side, team in teams.items():
-            team["statistics"] = self._metric_for(team.get("abbreviation"))
+            team["statistics2025"] = self._metric_for(team.get("abbreviation"), 2025)
+            team["currentStatistics"] = self._metric_for(team.get("abbreviation"), current_stats_season)
+            team["statistics"] = team["currentStatistics"] or team["statistics2025"]
             team["depthChart"] = depth[side]
             for unit in ("offense", "defense"):
                 for player in team["depthChart"][unit]:
@@ -773,6 +779,7 @@ class NFLManager:
                 for article in relevant_articles[:6]
             ],
             "rankingsSeason": 2025,
+            "currentRankingsSeason": current_stats_season,
             "accuracy": self.accuracy((summary.get("header", {}).get("season") or {}).get("year")),
             "powerRankings": {
                 "title": power_rankings.get("title"),
