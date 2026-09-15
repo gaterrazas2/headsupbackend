@@ -39,6 +39,20 @@ limiter = Limiter(get_remote_address, app=app, default_limits=[])
 login_manager = LoginManager(app)
 backend = Backend()
 
+PUBLIC_CONTENT_PATHS = {
+    "/guest-posts", "/getComics", "/getSports", "/getMusic", "/getEvents",
+    "/getGames", "/getFood", "/getShop", "/getBirdTitles",
+}
+
+
+@app.after_request
+def cache_public_content(response):
+    if request.method == "GET" and response.status_code == 200 and (
+        request.path in PUBLIC_CONTENT_PATHS or request.path.startswith("/getBirds/")
+    ):
+        response.headers["Cache-Control"] = "public, max-age=60, s-maxage=300, stale-while-revalidate=600"
+    return response
+
 
 class AdminUser(UserMixin):
     id = "admin"
