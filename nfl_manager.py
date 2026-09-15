@@ -407,12 +407,12 @@ class NFLManager:
         else:
             try:
                 events_url = f"https://api.the-odds-api.com/v4/sports/americanfootball_nfl/events?{urlencode({'apiKey': api_key})}"
-                events = self._json(events_url)
+                events = self._json(events_url, timeout=8)
                 event = next((item for item in events if item.get("home_team") == teams["home"].get("name") and item.get("away_team") == teams["away"].get("name")), None)
                 if not event:
                     return [], "Sportsbook lines are not available for this matchup yet."
                 params = urlencode({"apiKey": api_key, "regions": "us", "markets": ",".join(markets), "oddsFormat": "american"})
-                odds = self._json(f"https://api.the-odds-api.com/v4/sports/americanfootball_nfl/events/{event['id']}/odds?{params}")
+                odds = self._json(f"https://api.the-odds-api.com/v4/sports/americanfootball_nfl/events/{event['id']}/odds?{params}", timeout=8)
                 self._sportsbook_cache[cache_key] = {"time": time.time(), "odds": odds}
             except Exception as error:
                 print(f"Could not load NFL player prop odds: {error}")
@@ -585,9 +585,9 @@ class NFLManager:
         )
         return probability
 
-    def _json(self, url):
+    def _json(self, url, timeout=20):
         request = Request(url, headers={"User-Agent": "LittleBrotherNFL/1.0", "Accept": "application/json"})
-        with urlopen(request, timeout=20) as response:
+        with urlopen(request, timeout=timeout) as response:
             return json.loads(response.read().decode("utf-8"))
 
     def _text(self, url):
@@ -932,17 +932,22 @@ class NFLManager:
         pregame_prediction = saved_pregame.get("prediction") if saved_pregame else None
         live_state = competition.get("status", {}).get("type", {}).get("state", "pre")
         if live_state == "pre":
-            self._player_weekly_stats(current_stats_season)
-            projection_jobs = []
-            with ThreadPoolExecutor(max_workers=8) as executor:
-                for side, opponent_side in (("away", "home"), ("home", "away")):
-                    for player in teams[side].get("depthChart", {}).get("offense", []):
-                        if player.get("position") in {"QB", "RB", "WR", "TE"}:
-                            projection_jobs.append(executor.submit(self._skill_projection, player, teams[opponent_side].get("abbreviation"), teams[side].get("abbreviation")))
-                player_projections = [result for result in (job.result() for job in projection_jobs) if result and result.get("projected")]
-            self._save_pregame_prediction(event_id, prediction, teams, player_projections)
-            saved_pregame = self._saved_pregame_prediction(event_id)
-            pregame_prediction = saved_pregame.get("prediction") if saved_pregame else prediction
+            saved_players = (saved_pregame or {}).get("playerProjections", [])
+            projections_are_current = saved_players and all(item.get("modelVersion") == 3 for item in saved_players)
+            if projections_are_current:
+                player_projections = saved_players
+            else:
+                self._player_weekly_stats(current_stats_season)
+                projection_jobs = []
+                with ThreadPoolExecutor(max_workers=8) as executor:
+                    for side, opponent_side in (("away", "home"), ("home", "away")):
+                        for player in teams[side].get("depthChart", {}).get("offense", []):
+                            if player.get("position") in {"QB", "RB", "WR", "TE"}:
+                                projection_jobs.append(executor.submit(self._skill_projection, player, teams[opponent_side].get("abbreviation"), teams[side].get("abbreviation")))
+                    player_projections = [result for result in (job.result() for job in projection_jobs) if result and result.get("projected")]
+                self._save_pregame_prediction(event_id, prediction, teams, player_projections)
+                saved_pregame = self._saved_pregame_prediction(event_id)
+                pregame_prediction = saved_pregame.get("prediction") if saved_pregame else prediction
         if live_state in {"in", "post"}:
             prediction = self.game_probability(event_id)
         if live_state == "post" and not pregame_prediction:
