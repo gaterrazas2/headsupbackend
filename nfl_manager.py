@@ -131,9 +131,46 @@ class NFLManager:
             return None
         row = self.predictions_collection.find_one(
             {"gameId": str(event_id), "sport": "nfl", "phase": "pregame"},
-            {"_id": 0, "prediction": 1, "playerProjections": 1, "settled": 1, "grading": 1, "sportsbookTopProps": 1, "sportsbookTopPropsStatus": 1, "sportsbookTopPropsCheckedAt": 1},
+            {"_id": 0, "season": 1, "prediction": 1, "playerProjections": 1, "settled": 1, "grading": 1, "sportsbookTopProps": 1, "sportsbookTopPropsStatus": 1, "sportsbookTopPropsCheckedAt": 1},
         )
         return row if row else None
+
+    def _saved_final_detail(self, event_id):
+        """Build a completed-game view entirely from MongoDB."""
+        if self.archives_collection is None:
+            return None
+        saved = self._saved_pregame_prediction(event_id) or {}
+        archive = self.archives_collection.find_one(
+            {"games.id": str(event_id)}, {"_id": 0, "season": 1, "games.$": 1}
+        )
+        game = ((archive or {}).get("games") or [None])[0]
+        if not game:
+            return None
+        grading = saved.get("grading", {}) if saved.get("settled") else {}
+        projections = {str(item.get("id")): item for item in saved.get("playerProjections", [])}
+        comparisons = {}
+        for prop in grading.get("props", []):
+            player_id = str(prop.get("playerId"))
+            source = projections.get(player_id, {})
+            item = comparisons.setdefault(player_id, {
+                "id": player_id, "name": prop.get("player") or source.get("name"),
+                "team": source.get("team"), "position": prop.get("position") or source.get("position"),
+                "projected": {}, "actual": {},
+            })
+            stat = prop.get("stat")
+            if stat:
+                item["projected"][stat] = prop.get("projected")
+                item["actual"][stat] = prop.get("actual")
+        home_score, away_score = game.get("homeScore", 0), game.get("awayScore", 0)
+        return {
+            "id": str(event_id), "teams": {"away": game.get("away", {}), "home": game.get("home", {})},
+            "odds": {"details": "Final", "overUnder": None}, "gameState": "post",
+            "prediction": {"source": "final", "awayScore": away_score, "homeScore": home_score, "status": game.get("status", "Final")},
+            "pregamePrediction": saved.get("prediction"), "playerComparisons": list(comparisons.values()),
+            "topProps": [], "topPropsStatus": None, "articles": [],
+            "rankingsSeason": 2025, "currentRankingsSeason": archive.get("season") or saved.get("season"),
+            "accuracy": self.accuracy(archive.get("season") or saved.get("season")),
+        }
 
     def accuracy(self, season=None):
         if self.predictions_collection is None:
@@ -871,6 +908,9 @@ class NFLManager:
         return starters[:12]
 
     def matchup_detail(self, event_id, include_sportsbook=True):
+        saved_final = self._saved_final_detail(event_id)
+        if saved_final:
+            return saved_final
         summary = self._json(f"{self.ESPN_SITE}/summary?event={event_id}")
         competition = (summary.get("header", {}).get("competitions") or [{}])[0]
         competitors = {item.get("homeAway"): item for item in competition.get("competitors", [])}
