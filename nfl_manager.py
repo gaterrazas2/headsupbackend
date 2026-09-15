@@ -131,7 +131,7 @@ class NFLManager:
             return None
         row = self.predictions_collection.find_one(
             {"gameId": str(event_id), "sport": "nfl", "phase": "pregame"},
-            {"_id": 0, "season": 1, "prediction": 1, "playerProjections": 1, "settled": 1, "grading": 1, "sportsbookTopProps": 1, "sportsbookTopPropsStatus": 1, "sportsbookTopPropsCheckedAt": 1},
+            {"_id": 0, "season": 1, "prediction": 1, "playerProjections": 1, "settled": 1, "grading": 1, "sportsbookTopProps": 1, "sportsbookTopPropsStatus": 1, "sportsbookTopPropsCheckedAt": 1, "sportsbookModelVersion": 1},
         )
         return row if row else None
 
@@ -320,16 +320,7 @@ class NFLManager:
                     probability = round(two_plus_probability * 100, 1)
                     edge = self._number(matchup_edges.get("passingYards"))
                     candidates.append({**common, "prop": "2+ passing touchdowns", "probability": probability, "matchupEdge": edge, "valueScore": round(probability + edge * 0.5, 1), "market": "player_pass_tds", "stat": "passingTouchdowns", "mean": expected_touchdowns})
-        ranked = sorted(candidates, key=lambda item: item["valueScore"], reverse=True)
-        selected, used_players = [], set()
-        for candidate in ranked:
-            if candidate["playerId"] in used_players:
-                continue
-            selected.append(candidate)
-            used_players.add(candidate["playerId"])
-            if len(selected) == 3:
-                break
-        return selected
+        return sorted(candidates, key=lambda item: item["valueScore"], reverse=True)
 
     def _player_weekly_stats(self, season=None):
         season = season or time.gmtime().tm_year
@@ -493,7 +484,15 @@ class NFLManager:
             if best and best["expectedValue"] > 0:
                 priced.append(best)
         priced.sort(key=lambda item: (item["expectedValue"], item["probability"]), reverse=True)
-        return priced[:3], None if priced else "No positive-value sportsbook props are available for this matchup right now."
+        selected, used_players = [], set()
+        for offer in priced:
+            if offer["playerId"] in used_players:
+                continue
+            selected.append(offer)
+            used_players.add(offer["playerId"])
+            if len(selected) == 3:
+                break
+        return selected, None if selected else "No positive-value sportsbook props are available for this matchup right now."
 
     def _actual_skill_stats(self, summary, positions, injuries):
         comparisons = []
@@ -1011,7 +1010,7 @@ class NFLManager:
         model_prop_candidates = self._top_prop_candidates(snapshot_players)
         saved_sportsbook_status = (saved_pregame or {}).get("sportsbookTopPropsStatus")
         saved_sportsbook_is_final = saved_sportsbook_status is None or saved_sportsbook_status.startswith("No positive-value")
-        if live_state == "pre" and saved_pregame and saved_pregame.get("sportsbookTopPropsCheckedAt") and saved_sportsbook_is_final:
+        if live_state == "pre" and saved_pregame and saved_pregame.get("sportsbookTopPropsCheckedAt") and saved_sportsbook_is_final and saved_pregame.get("sportsbookModelVersion") == 2:
             top_props = saved_pregame.get("sportsbookTopProps", [])
             top_props_status = saved_pregame.get("sportsbookTopPropsStatus")
         elif live_state == "pre" and include_sportsbook:
@@ -1020,7 +1019,7 @@ class NFLManager:
             if self.predictions_collection is not None and saved_pregame and sportsbook_result_is_final:
                 self.predictions_collection.update_one(
                     {"gameId": str(event_id), "sport": "nfl", "phase": "pregame"},
-                    {"$set": {"sportsbookTopProps": top_props, "sportsbookTopPropsStatus": top_props_status, "sportsbookTopPropsCheckedAt": int(time.time())}},
+                    {"$set": {"sportsbookTopProps": top_props, "sportsbookTopPropsStatus": top_props_status, "sportsbookTopPropsCheckedAt": int(time.time()), "sportsbookModelVersion": 2}},
                 )
         elif live_state == "pre":
             top_props, top_props_status = [], "Open this matchup on the website to check sportsbook value props."
