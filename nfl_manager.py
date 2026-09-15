@@ -969,12 +969,15 @@ class NFLManager:
             self._settle_prediction(event_id, summary, prediction, teams, player_comparisons)
         snapshot_players = (saved_pregame or {}).get("playerProjections", [])
         model_prop_candidates = self._top_prop_candidates(snapshot_players)
-        if live_state == "pre" and saved_pregame and saved_pregame.get("sportsbookTopPropsCheckedAt"):
+        saved_sportsbook_status = (saved_pregame or {}).get("sportsbookTopPropsStatus")
+        saved_sportsbook_is_final = saved_sportsbook_status is None or saved_sportsbook_status.startswith("No positive-value")
+        if live_state == "pre" and saved_pregame and saved_pregame.get("sportsbookTopPropsCheckedAt") and saved_sportsbook_is_final:
             top_props = saved_pregame.get("sportsbookTopProps", [])
             top_props_status = saved_pregame.get("sportsbookTopPropsStatus")
         elif live_state == "pre" and include_sportsbook:
             top_props, top_props_status = self._sportsbook_value_props(teams, model_prop_candidates)
-            if self.predictions_collection is not None and saved_pregame:
+            sportsbook_result_is_final = top_props_status is None or top_props_status.startswith("No positive-value")
+            if self.predictions_collection is not None and saved_pregame and sportsbook_result_is_final:
                 self.predictions_collection.update_one(
                     {"gameId": str(event_id), "sport": "nfl", "phase": "pregame"},
                     {"$set": {"sportsbookTopProps": top_props, "sportsbookTopPropsStatus": top_props_status, "sportsbookTopPropsCheckedAt": int(time.time())}},
