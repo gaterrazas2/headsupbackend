@@ -431,7 +431,11 @@ class FantasyManager:
             "approvalStatus": "pending", "createdAt": datetime.now(timezone.utc),
         }
         result = self.recommendations.insert_one(document)
-        return {**document, "id": str(result.inserted_id), "createdAt": document["createdAt"].isoformat()}
+        return {
+            **{key: value for key, value in document.items() if key != "_id"},
+            "id": str(result.inserted_id),
+            "createdAt": document["createdAt"].isoformat(),
+        }
 
     def review_trade(self, plan_id, move_id, decision):
         plan = self._pending_plan(plan_id)
