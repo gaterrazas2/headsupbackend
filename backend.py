@@ -84,8 +84,8 @@ class Backend:
         self.name = "Gabriel Terrazas"
         self.openai = OpenAI()
         self.predictor = BaseballPredictor()
-        self.fantasy = FantasyManager(self.fantasy_recommendations)
         self.nfl = NFLManager(self.nfl_predictions, self.nfl_week_archives)
+        self.fantasy = FantasyManager(self.fantasy_recommendations, self.nfl)
 
     def record_model_prediction(self, payload, probabilities, nrfi_probability):
         """Keep the first pregame forecast so later refreshes cannot rewrite history."""

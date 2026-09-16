@@ -388,6 +388,22 @@ def review_fantasy_recommendation(plan_id, decision):
         return jsonify({"error": "ESPN could not complete that action. No further moves were attempted."}), 502
 
 
+@app.post("/admin/fantasy/recommendations/<plan_id>/moves/<decision>")
+@login_required
+def review_fantasy_move(plan_id, decision):
+    csrf_error = require_csrf()
+    if csrf_error:
+        return csrf_error
+    try:
+        data = request.get_json(silent=True) or {}
+        return jsonify(backend.fantasy.review_move(plan_id, data.get("moveId"), decision))
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+    except Exception as error:
+        print(f"Fantasy move approval error: {error}")
+        return jsonify({"error": "ESPN could not complete that move. No other moves were attempted."}), 502
+
+
 @app.get("/admin/nfl/matchups")
 @login_required
 def nfl_matchups():

@@ -19,8 +19,9 @@ class FantasyManager:
     LINEUP_POSITION_NAMES = {0: "QB", 2: "RB", 4: "WR", 6: "TE", 16: "D/ST", 17: "K", 23: "FLEX"}
     PLAYER_POSITION_NAMES = {1: "QB", 2: "RB", 3: "WR", 4: "TE", 5: "K", 16: "D/ST"}
 
-    def __init__(self, recommendations_collection):
+    def __init__(self, recommendations_collection, nfl_manager=None):
         self.recommendations = recommendations_collection
+        self.nfl = nfl_manager
         self.season = int(os.getenv("ESPN_FANTASY_SEASON", datetime.now().year))
 
     def configured(self):
@@ -99,11 +100,60 @@ class FantasyManager:
             "name": player.get("fullName", "Unknown player"),
             "positionId": player.get("defaultPositionId"),
             "position": self.PLAYER_POSITION_NAMES.get(player.get("defaultPositionId"), "FLEX"),
+            "proTeamId": player.get("proTeamId"),
             "eligibleSlots": player.get("eligibleSlots", []),
             "lineupSlotId": entry.get("lineupSlotId", self.BENCH_SLOT),
             "projectedPoints": self._projection(player, week),
             "injuryStatus": player.get("injuryStatus", "ACTIVE"),
         }
+
+    def _apply_matchups(self, players, week):
+        """Blend ESPN projections with the defense each player actually faces."""
+        if not self.nfl:
+            for player in players:
+                player["matchupAdjustedPoints"] = player["projectedPoints"]
+            return players
+        try:
+            scoreboard = self.nfl._json(f"{self.nfl.ESPN_SITE}/scoreboard?dates={self.season}&seasontype=2&week={week}&limit=50")
+            opponents = {}
+            for event in scoreboard.get("events", []):
+                competition = (event.get("competitions") or [{}])[0]
+                competitors = competition.get("competitors") or []
+                if len(competitors) != 2:
+                    continue
+                left, right = competitors
+                opponents[str(left.get("team", {}).get("id"))] = right.get("team", {})
+                opponents[str(right.get("team", {}).get("id"))] = left.get("team", {})
+            for player in players:
+                opponent = opponents.get(str(player.get("proTeamId")))
+                projection = player.get("projectedPoints", 0)
+                factor, rank, matchup_type = 1.0, None, None
+                if opponent:
+                    metrics = self.nfl._metric_for(opponent.get("abbreviation"), self.season)
+                    position = player.get("position")
+                    if position in {"QB", "WR", "TE"}:
+                        rank, matchup_type = metrics.get("defensePassRank"), "pass defense"
+                    elif position == "RB":
+                        rank, matchup_type = metrics.get("defenseRushRank"), "run defense"
+                    elif position == "D/ST":
+                        rank, matchup_type = metrics.get("offenseRank"), "opposing offense"
+                    if rank:
+                        factor = max(0.80, min(1.20, 1 + (rank - 16.5) * 0.012))
+                injury = str(player.get("injuryStatus") or "").upper()
+                injury_factor = 0.0 if injury in {"OUT", "INJURY_RESERVE", "SUSPENSION"} else 0.65 if injury == "DOUBTFUL" else 0.90 if injury == "QUESTIONABLE" else 1.0
+                player["matchupAdjustedPoints"] = round(projection * factor * injury_factor, 2)
+                player["matchup"] = {
+                    "opponent": opponent.get("abbreviation") if opponent else "BYE/TBD",
+                    "type": matchup_type,
+                    "rank": rank,
+                    "factor": round(factor, 3),
+                }
+            return players
+        except Exception as error:
+            print(f"Could not apply fantasy matchup adjustments: {error}")
+            for player in players:
+                player["matchupAdjustedPoints"] = player["projectedPoints"]
+            return players
 
     def _best_lineup(self, players, slot_counts):
         slots = []
@@ -128,12 +178,12 @@ class FantasyManager:
                 player for player in players
                 if player["id"] not in used and slot in player["eligibleSlots"]
             ]
-            candidates.sort(key=lambda player: player["projectedPoints"], reverse=True)
+            candidates.sort(key=lambda player: player["matchupAdjustedPoints"], reverse=True)
             for player in candidates:
                 search(
                     index + 1,
                     used | {player["id"]},
-                    score + player["projectedPoints"],
+                    score + player["matchupAdjustedPoints"],
                     [*assignments, (player, slot)],
                 )
 
@@ -161,10 +211,12 @@ class FantasyManager:
                 "name": player.get("fullName", "Unknown player"),
                 "positionId": player.get("defaultPositionId"),
                 "position": self.PLAYER_POSITION_NAMES.get(player.get("defaultPositionId"), "FLEX"),
+                "proTeamId": player.get("proTeamId"),
                 "projectedPoints": self._projection(player, week),
                 "status": entry.get("status", "FREEAGENT"),
+                "injuryStatus": player.get("injuryStatus", "ACTIVE"),
             })
-        return agents
+        return self._apply_matchups(agents, week)
 
     def team_roster(self, league_key):
         config = self.LEAGUES.get(league_key)
@@ -177,7 +229,7 @@ class FantasyManager:
         )
         team = self._owned_team(league)
         week = max(int(league.get("scoringPeriodId") or 0), 1)
-        players = [self._player(entry, week) for entry in (team.get("roster") or {}).get("entries", [])]
+        players = self._apply_matchups([self._player(entry, week) for entry in (team.get("roster") or {}).get("entries", [])], week)
         for player in players:
             slot = player["lineupSlotId"]
             player["lineupSlot"] = self.LINEUP_POSITION_NAMES.get(slot, "IR" if slot == self.IR_SLOT else "Bench")
@@ -202,7 +254,7 @@ class FantasyManager:
         team = self._owned_team(league)
         week = max(int(league.get("scoringPeriodId") or 0), 1)
         entries = (team.get("roster") or {}).get("entries", [])
-        players = [self._player(entry, week) for entry in entries]
+        players = self._apply_matchups([self._player(entry, week) for entry in entries], week)
         team_name = self._team_name(team)
 
         if not players:
@@ -236,17 +288,40 @@ class FantasyManager:
         slot_counts = (league.get("settings", {}).get("rosterSettings", {}).get("lineupSlotCounts", {}))
         assignments = self._best_lineup(players, slot_counts)
         desired_slots = {player["id"]: slot for player, slot in assignments}
-        lineup_moves = []
+        raw_lineup_moves = []
         for player in players:
             desired = desired_slots.get(player["id"], self.BENCH_SLOT)
             if desired != player["lineupSlotId"] and player["lineupSlotId"] != self.IR_SLOT:
-                lineup_moves.append({
+                raw_lineup_moves.append({
                     "playerId": player["id"],
                     "player": player["name"],
                     "fromSlotId": player["lineupSlotId"],
                     "toSlotId": desired,
                     "projectedPoints": player["projectedPoints"],
+                    "matchupAdjustedPoints": player["matchupAdjustedPoints"],
+                    "matchup": player.get("matchup"),
                 })
+
+        lineup_moves = []
+        used_player_ids = set()
+        for incoming in [move for move in raw_lineup_moves if move["toSlotId"] not in (self.BENCH_SLOT, self.IR_SLOT)]:
+            if incoming["playerId"] in used_player_ids:
+                continue
+            outgoing = next((
+                move for move in raw_lineup_moves
+                if move["playerId"] not in used_player_ids
+                and move["fromSlotId"] == incoming["toSlotId"]
+                and move["toSlotId"] in (self.BENCH_SLOT, self.IR_SLOT)
+            ), None)
+            items = [incoming, *([outgoing] if outgoing else [])]
+            used_player_ids.update(move["playerId"] for move in items)
+            rejection_key = "lineup:" + ":".join(str(move["playerId"]) for move in sorted(items, key=lambda move: str(move["playerId"])))
+            lineup_moves.append({
+                "moveId": rejection_key, "rejectionKey": rejection_key, "decision": "pending",
+                "startPlayer": incoming["player"], "benchPlayer": outgoing.get("player") if outgoing else None,
+                "projectedPoints": incoming["projectedPoints"], "matchupAdjustedPoints": incoming["matchupAdjustedPoints"],
+                "matchup": incoming.get("matchup"), "items": items,
+            })
 
         add_drop_moves = []
         try:
@@ -257,21 +332,31 @@ class FantasyManager:
                 same_position = [p for p in bench if p["positionId"] == agent["positionId"]]
                 if not same_position:
                     continue
-                drop = min(same_position, key=lambda player: player["projectedPoints"])
-                improvement = agent["projectedPoints"] - drop["projectedPoints"]
+                drop = min(same_position, key=lambda player: player["matchupAdjustedPoints"])
+                improvement = agent["matchupAdjustedPoints"] - drop["matchupAdjustedPoints"]
                 if improvement >= 3:
                     upgrades.append((improvement, agent, drop))
             if upgrades:
                 improvement, add, drop = max(upgrades, key=lambda item: item[0])
                 add_drop_moves.append({
+                    "moveId": f'adddrop:{add["id"]}:{drop["id"]}', "rejectionKey": f'adddrop:{add["id"]}:{drop["id"]}', "decision": "pending",
                     "addPlayerId": add["id"], "addPlayer": add["name"],
                     "dropPlayerId": drop["id"], "dropPlayer": drop["name"],
                     "position": add["position"], "status": add["status"],
                     "improvement": round(improvement, 2),
+                    "projectedPoints": add["projectedPoints"], "matchupAdjustedPoints": add["matchupAdjustedPoints"],
+                    "matchup": add.get("matchup"),
                 })
         except Exception as error:
             print(f"Could not calculate free-agent upgrades: {error}")
 
+        rejected = {
+            row.get("rejectionKey") for row in self.recommendations.find(
+                {"recordType": "move_rejection", "leagueKey": league_key}, {"_id": 0, "rejectionKey": 1}
+            )
+        }
+        lineup_moves = [move for move in lineup_moves if move["rejectionKey"] not in rejected]
+        add_drop_moves = [move for move in add_drop_moves if move["rejectionKey"] not in rejected]
         return {
             "leagueKey": league_key,
             "leagueName": team_name,
@@ -312,8 +397,7 @@ class FantasyManager:
         )
         return {"status": "denied"}
 
-    def _execute_lineup(self, plan, league_id):
-        moves = plan.get("lineupMoves", [])
+    def _execute_lineup_items(self, plan, league_id, moves):
         if not moves:
             return
         payload = {
@@ -339,8 +423,8 @@ class FantasyManager:
             headers={"Content-Type": "application/json", "X-Fantasy-Platform": "kona-PROD"},
         )
 
-    def _execute_add_drop(self, plan, league_id):
-        for move in plan.get("addDropMoves", []):
+    def _execute_add_drop_moves(self, plan, league_id, moves):
+        for move in moves:
             transaction_type = "WAIVER" if move.get("status") == "WAIVERS" else "FREEAGENT"
             payload = {
                 "isLeagueManager": False,
@@ -361,6 +445,47 @@ class FantasyManager:
                 headers={"Content-Type": "application/json", "X-Fantasy-Platform": "kona-PROD"},
             )
 
+    def review_move(self, plan_id, move_id, decision):
+        if decision not in {"approve", "deny"}:
+            raise ValueError("Decision must be approve or deny")
+        plan = self._pending_plan(plan_id)
+        config = self.LEAGUES.get(plan.get("leagueKey"))
+        if not config:
+            raise ValueError("Unknown fantasy league")
+        move_type = None
+        move = None
+        for field, kind in (("lineupMoves", "lineup"), ("addDropMoves", "adddrop")):
+            move = next((item for item in plan.get(field, []) if item.get("moveId") == move_id), None)
+            if move:
+                move_type = kind
+                break
+        if not move or move.get("decision") != "pending":
+            raise ValueError("This move is missing or has already been reviewed")
+
+        if decision == "approve":
+            if move_type == "lineup":
+                self._execute_lineup_items(plan, config["leagueId"], move.get("items", []))
+            else:
+                self._execute_add_drop_moves(plan, config["leagueId"], [move])
+        else:
+            self.recommendations.update_one(
+                {"recordType": "move_rejection", "leagueKey": plan["leagueKey"], "rejectionKey": move["rejectionKey"]},
+                {"$set": {"recordType": "move_rejection", "leagueKey": plan["leagueKey"], "rejectionKey": move["rejectionKey"], "createdAt": datetime.now(timezone.utc)}},
+                upsert=True,
+            )
+
+        move["decision"] = "approved" if decision == "approve" else "denied"
+        remaining = [
+            item for field in ("lineupMoves", "addDropMoves")
+            for item in plan.get(field, []) if item.get("moveId") != move_id and item.get("decision") == "pending"
+        ]
+        status = "pending" if remaining else "reviewed"
+        self.recommendations.update_one(
+            {"_id": plan["_id"]},
+            {"$set": {"lineupMoves": plan.get("lineupMoves", []), "addDropMoves": plan.get("addDropMoves", []), "approvalStatus": status, "reviewedAt": datetime.now(timezone.utc)}},
+        )
+        return {"status": move["decision"], "moveId": move_id, "planStatus": status}
+
     def approve_plan(self, plan_id):
         plan = self._pending_plan(plan_id)
         config = self.LEAGUES.get(plan.get("leagueKey"))
@@ -371,8 +496,9 @@ class FantasyManager:
         if not plan.get("lineupMoves") and not plan.get("addDropMoves"):
             raise ValueError("There are no changes to execute")
 
-        self._execute_add_drop(plan, config["leagueId"])
-        self._execute_lineup(plan, config["leagueId"])
+        self._execute_add_drop_moves(plan, config["leagueId"], plan.get("addDropMoves", []))
+        lineup_items = [item for move in plan.get("lineupMoves", []) for item in move.get("items", [])]
+        self._execute_lineup_items(plan, config["leagueId"], lineup_items)
         self.recommendations.update_one(
             {"_id": plan["_id"], "approvalStatus": "pending"},
             {"$set": {"approvalStatus": "approved", "reviewedAt": datetime.now(timezone.utc)}},
