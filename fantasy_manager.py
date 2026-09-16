@@ -382,7 +382,7 @@ class FantasyManager:
             roster = [self._player(entry, week) for entry in (team.get("roster") or {}).get("entries", [])]
             rosters[team.get("id")] = self._apply_matchups(roster, week)
         own_roster = rosters.get(own_team.get("id"), [])
-        eligible = {"QB", "RB", "WR", "TE"}
+        eligible = {"RB", "WR", "TE"}
         own_candidates = [player for player in own_roster if player.get("position") in eligible and player.get("matchupAdjustedPoints", 0) >= 4 and player.get("injuryStatus") not in {"OUT", "INJURY_RESERVE"}]
         rejected = {
             row.get("rejectionKey") for row in self.recommendations.find(
@@ -452,8 +452,8 @@ class FantasyManager:
                 "type": "TRADE_PROPOSAL", "executionType": "PROPOSE",
                 "comment": trade["justification"],
                 "items": [
-                    {"playerId": trade["givePlayerId"], "type": "DROP", "fromTeamId": plan["teamId"], "toTeamId": trade["targetTeamId"]},
-                    {"playerId": trade["receivePlayerId"], "type": "ADD", "fromTeamId": trade["targetTeamId"], "toTeamId": plan["teamId"]},
+                    {"playerId": trade["givePlayerId"], "type": "TRADE", "fromTeamId": plan["teamId"], "toTeamId": trade["targetTeamId"]},
+                    {"playerId": trade["receivePlayerId"], "type": "TRADE", "fromTeamId": trade["targetTeamId"], "toTeamId": plan["teamId"]},
                 ],
             }
             self._request_json(f'{self._league_url(config["leagueId"], write=True)}/transactions/', method="POST", payload=payload, headers={"Content-Type": "application/json", "X-Fantasy-Platform": "kona-PROD"})
