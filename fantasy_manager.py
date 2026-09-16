@@ -449,7 +449,8 @@ class FantasyManager:
             payload = {
                 "isLeagueManager": False, "isActingAsTeamOwner": False,
                 "teamId": plan["teamId"], "scoringPeriodId": plan["week"],
-                "type": "TRADE_PROPOSAL", "executionType": "PROPOSE",
+                "type": "TRADE_PROPOSAL", "executionType": "EXECUTE",
+                "bidAmount": 0, "skipTransactionCounters": False,
                 "comment": trade["justification"],
                 "items": [
                     {"playerId": trade["givePlayerId"], "type": "TRADE", "fromTeamId": plan["teamId"], "toTeamId": trade["targetTeamId"]},

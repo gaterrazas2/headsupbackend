@@ -429,6 +429,7 @@ def review_fantasy_trade(plan_id, decision):
         data = request.get_json(silent=True) or {}
         return jsonify(backend.fantasy.review_trade(plan_id, data.get("moveId"), decision))
     except ValueError as error:
+        print(f"Fantasy trade validation error: {error}")
         return jsonify({"error": str(error)}), 400
     except Exception as error:
         print(f"Fantasy trade approval error: {error}")
