@@ -422,7 +422,7 @@ class FantasyManager:
                     other_after_roster = [player for player in other_roster if player["id"] != receive["id"]] + [give]
                     own_gain = sum(self._position_value(own_after_roster, pos, count) for pos, count in position_counts.items()) - own_before
                     other_gain = sum(self._position_value(other_after_roster, pos, count) for pos, count in position_counts.items()) - other_before
-                    if own_gain < 0.5 or other_gain < 0.5:
+                    if own_gain < 0.25 or other_gain < -0.75:
                         continue
                     rejection_key = f'trade:{give["id"]}:{receive["id"]}:{other_team.get("id")}'
                     if rejection_key in rejected:
@@ -434,7 +434,7 @@ class FantasyManager:
                         "givePlayerId": give["id"], "givePlayer": give["name"], "givePosition": give["position"], "giveValue": give_value,
                         "receivePlayerId": receive["id"], "receivePlayer": receive["name"], "receivePosition": receive["position"], "receiveValue": receive_value,
                         "yourGain": round(own_gain, 2), "theirGain": round(other_gain, 2), "fairness": round(min(value_ratio, 1 / value_ratio) * 100),
-                        "justification": f'{self._team_name(other_team)} gains about {other_gain:.1f} matchup-adjusted starter points by filling a need at {give["position"]}, while you fill a need at {receive["position"]}. The player values are within {abs(1 - value_ratio) * 100:.0f}% of each other.',
+                        "justification": f'{self._team_name(other_team)} gets {give["name"]} to strengthen {give["position"]}, while you fill a need at {receive["position"]}. The player values are within {abs(1 - value_ratio) * 100:.0f}% of each other and their modeled lineup impact is {other_gain:+.1f} points, so this is a balanced offer rather than a fleece.',
                     }
                     if best_for_team is None or score > best_for_team[0]:
                         best_for_team = (score, proposal)
