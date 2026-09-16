@@ -422,18 +422,20 @@ class FantasyManager:
                     other_after_roster = [player for player in other_roster if player["id"] != receive["id"]] + [give]
                     own_gain = sum(self._position_value(own_after_roster, pos, count) for pos, count in position_counts.items()) - own_before
                     other_gain = sum(self._position_value(other_after_roster, pos, count) for pos, count in position_counts.items()) - other_before
-                    if own_gain < 0.25 or other_gain < -0.75:
+                    roster_value_gain = receive_value - give_value
+                    modeled_gain = max(own_gain, roster_value_gain)
+                    if modeled_gain < 0.25 or other_gain < -1.5:
                         continue
                     rejection_key = f'trade:{give["id"]}:{receive["id"]}:{other_team.get("id")}'
                     if rejection_key in rejected:
                         continue
-                    score = own_gain + other_gain - abs(1 - value_ratio) * 5
+                    score = modeled_gain + other_gain - abs(1 - value_ratio) * 5
                     proposal = {
                         "moveId": rejection_key, "rejectionKey": rejection_key, "decision": "pending",
                         "targetTeamId": other_team.get("id"), "targetTeam": self._team_name(other_team),
                         "givePlayerId": give["id"], "givePlayer": give["name"], "givePosition": give["position"], "giveValue": give_value,
                         "receivePlayerId": receive["id"], "receivePlayer": receive["name"], "receivePosition": receive["position"], "receiveValue": receive_value,
-                        "yourGain": round(own_gain, 2), "theirGain": round(other_gain, 2), "fairness": round(min(value_ratio, 1 / value_ratio) * 100),
+                        "yourGain": round(modeled_gain, 2), "theirGain": round(other_gain, 2), "fairness": round(min(value_ratio, 1 / value_ratio) * 100),
                         "justification": f'{self._team_name(other_team)} gets {give["name"]} to strengthen {give["position"]}, while you fill a need at {receive["position"]}. The player values are within {abs(1 - value_ratio) * 100:.0f}% of each other and their modeled lineup impact is {other_gain:+.1f} points, so this is a balanced offer rather than a fleece.',
                     }
                     if best_for_team is None or score > best_for_team[0]:
