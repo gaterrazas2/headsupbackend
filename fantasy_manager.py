@@ -352,7 +352,7 @@ class FantasyManager:
 
         rejected = {
             row.get("rejectionKey") for row in self.recommendations.find(
-                {"recordType": "move_rejection", "leagueKey": league_key}, {"_id": 0, "rejectionKey": 1}
+                {"recordType": "move_rejection", "leagueKey": league_key, "week": week}, {"_id": 0, "rejectionKey": 1}
             )
         }
         lineup_moves = [move for move in lineup_moves if move["rejectionKey"] not in rejected]
@@ -386,7 +386,7 @@ class FantasyManager:
         own_candidates = [player for player in own_roster if player.get("position") in eligible and player.get("matchupAdjustedPoints", 0) >= 4 and player.get("injuryStatus") not in {"OUT", "INJURY_RESERVE"}]
         rejected = {
             row.get("rejectionKey") for row in self.recommendations.find(
-                {"recordType": "trade_rejection", "leagueKey": league_key}, {"_id": 0, "rejectionKey": 1}
+                {"recordType": "trade_rejection", "leagueKey": league_key, "week": week}, {"_id": 0, "rejectionKey": 1}
             )
         }
         suggestions = []
@@ -455,8 +455,8 @@ class FantasyManager:
             self._request_json(f'{self._league_url(config["leagueId"], write=True)}/transactions/', method="POST", payload=payload, headers={"Content-Type": "application/json", "X-Fantasy-Platform": "kona-PROD"})
         else:
             self.recommendations.update_one(
-                {"recordType": "trade_rejection", "leagueKey": plan["leagueKey"], "rejectionKey": trade["rejectionKey"]},
-                {"$set": {"recordType": "trade_rejection", "leagueKey": plan["leagueKey"], "rejectionKey": trade["rejectionKey"], "createdAt": datetime.now(timezone.utc)}}, upsert=True,
+                {"recordType": "trade_rejection", "leagueKey": plan["leagueKey"], "week": plan["week"], "rejectionKey": trade["rejectionKey"]},
+                {"$set": {"recordType": "trade_rejection", "leagueKey": plan["leagueKey"], "week": plan["week"], "rejectionKey": trade["rejectionKey"], "createdAt": datetime.now(timezone.utc)}}, upsert=True,
             )
         trade["decision"] = "approved" if decision == "approve" else "denied"
         remaining = [item for item in plan.get("trades", []) if item.get("moveId") != move_id and item.get("decision") == "pending"]
@@ -563,8 +563,8 @@ class FantasyManager:
                 self._execute_add_drop_moves(plan, config["leagueId"], [move])
         else:
             self.recommendations.update_one(
-                {"recordType": "move_rejection", "leagueKey": plan["leagueKey"], "rejectionKey": move["rejectionKey"]},
-                {"$set": {"recordType": "move_rejection", "leagueKey": plan["leagueKey"], "rejectionKey": move["rejectionKey"], "createdAt": datetime.now(timezone.utc)}},
+                {"recordType": "move_rejection", "leagueKey": plan["leagueKey"], "week": plan["week"], "rejectionKey": move["rejectionKey"]},
+                {"$set": {"recordType": "move_rejection", "leagueKey": plan["leagueKey"], "week": plan["week"], "rejectionKey": move["rejectionKey"], "createdAt": datetime.now(timezone.utc)}},
                 upsert=True,
             )
 
