@@ -367,6 +367,21 @@ def fantasy_team_roster(league_key):
         return jsonify({"error": "Could not load the ESPN roster"}), 502
 
 
+@app.post("/admin/fantasy/leagues/<league_key>/trades")
+@login_required
+def fantasy_trade_suggestions(league_key):
+    csrf_error = require_csrf()
+    if csrf_error:
+        return csrf_error
+    try:
+        return jsonify(backend.fantasy.trade_suggestions(league_key))
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+    except Exception as error:
+        print(f"Fantasy trade suggestion error: {error}")
+        return jsonify({"error": "Could not build fair trade suggestions"}), 502
+
+
 @app.post("/admin/fantasy/recommendations/<plan_id>/<decision>")
 @login_required
 def review_fantasy_recommendation(plan_id, decision):
@@ -402,6 +417,22 @@ def review_fantasy_move(plan_id, decision):
     except Exception as error:
         print(f"Fantasy move approval error: {error}")
         return jsonify({"error": "ESPN could not complete that move. No other moves were attempted."}), 502
+
+
+@app.post("/admin/fantasy/trades/<plan_id>/<decision>")
+@login_required
+def review_fantasy_trade(plan_id, decision):
+    csrf_error = require_csrf()
+    if csrf_error:
+        return csrf_error
+    try:
+        data = request.get_json(silent=True) or {}
+        return jsonify(backend.fantasy.review_trade(plan_id, data.get("moveId"), decision))
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+    except Exception as error:
+        print(f"Fantasy trade approval error: {error}")
+        return jsonify({"error": "ESPN could not send this trade. No other trade was attempted."}), 502
 
 
 @app.get("/admin/nfl/matchups")

@@ -370,6 +370,116 @@ class FantasyManager:
             "roster": players,
         }
 
+    @staticmethod
+    def _position_value(players, position, count):
+        values = sorted(
+            (player.get("matchupAdjustedPoints", 0) for player in players if player.get("position") == position),
+            reverse=True,
+        )
+        return sum(values[:count])
+
+    def trade_suggestions(self, league_key):
+        config = self.LEAGUES.get(league_key)
+        if not config:
+            raise ValueError("Unknown fantasy league")
+        league = self._request_json(f'{self._league_url(config["leagueId"])}?view=mTeam&view=mRoster&view=mSettings')
+        own_team = self._owned_team(league)
+        week = max(int(league.get("scoringPeriodId") or 0), 1)
+        slot_counts = league.get("settings", {}).get("rosterSettings", {}).get("lineupSlotCounts", {})
+        position_counts = {"QB": int(slot_counts.get("0", 1)), "RB": int(slot_counts.get("2", 2)), "WR": int(slot_counts.get("4", 2)), "TE": int(slot_counts.get("6", 1))}
+
+        rosters = {}
+        for team in league.get("teams", []):
+            roster = [self._player(entry, week) for entry in (team.get("roster") or {}).get("entries", [])]
+            rosters[team.get("id")] = self._apply_matchups(roster, week)
+        own_roster = rosters.get(own_team.get("id"), [])
+        eligible = {"QB", "RB", "WR", "TE"}
+        own_candidates = [player for player in own_roster if player.get("position") in eligible and player.get("matchupAdjustedPoints", 0) >= 4 and player.get("injuryStatus") not in {"OUT", "INJURY_RESERVE"}]
+        rejected = {
+            row.get("rejectionKey") for row in self.recommendations.find(
+                {"recordType": "trade_rejection", "leagueKey": league_key}, {"_id": 0, "rejectionKey": 1}
+            )
+        }
+        suggestions = []
+        for other_team in league.get("teams", []):
+            if other_team.get("id") == own_team.get("id"):
+                continue
+            other_roster = rosters.get(other_team.get("id"), [])
+            other_candidates = [player for player in other_roster if player.get("position") in eligible and player.get("matchupAdjustedPoints", 0) >= 4 and player.get("injuryStatus") not in {"OUT", "INJURY_RESERVE"}]
+            best_for_team = None
+            for give in own_candidates:
+                for receive in other_candidates:
+                    if give["position"] == receive["position"]:
+                        continue
+                    give_value = give["matchupAdjustedPoints"]
+                    receive_value = receive["matchupAdjustedPoints"]
+                    value_ratio = receive_value / max(give_value, 0.1)
+                    if not 0.88 <= value_ratio <= 1.12:
+                        continue
+                    own_before = sum(self._position_value(own_roster, pos, count) for pos, count in position_counts.items())
+                    other_before = sum(self._position_value(other_roster, pos, count) for pos, count in position_counts.items())
+                    own_after_roster = [player for player in own_roster if player["id"] != give["id"]] + [receive]
+                    other_after_roster = [player for player in other_roster if player["id"] != receive["id"]] + [give]
+                    own_gain = sum(self._position_value(own_after_roster, pos, count) for pos, count in position_counts.items()) - own_before
+                    other_gain = sum(self._position_value(other_after_roster, pos, count) for pos, count in position_counts.items()) - other_before
+                    if own_gain < 0.5 or other_gain < 0.5:
+                        continue
+                    rejection_key = f'trade:{give["id"]}:{receive["id"]}:{other_team.get("id")}'
+                    if rejection_key in rejected:
+                        continue
+                    score = own_gain + other_gain - abs(1 - value_ratio) * 5
+                    proposal = {
+                        "moveId": rejection_key, "rejectionKey": rejection_key, "decision": "pending",
+                        "targetTeamId": other_team.get("id"), "targetTeam": self._team_name(other_team),
+                        "givePlayerId": give["id"], "givePlayer": give["name"], "givePosition": give["position"], "giveValue": give_value,
+                        "receivePlayerId": receive["id"], "receivePlayer": receive["name"], "receivePosition": receive["position"], "receiveValue": receive_value,
+                        "yourGain": round(own_gain, 2), "theirGain": round(other_gain, 2), "fairness": round(min(value_ratio, 1 / value_ratio) * 100),
+                        "justification": f'{self._team_name(other_team)} gains about {other_gain:.1f} matchup-adjusted starter points by filling a need at {give["position"]}, while you fill a need at {receive["position"]}. The player values are within {abs(1 - value_ratio) * 100:.0f}% of each other.',
+                    }
+                    if best_for_team is None or score > best_for_team[0]:
+                        best_for_team = (score, proposal)
+            if best_for_team:
+                suggestions.append(best_for_team)
+        suggestions = [item[1] for item in sorted(suggestions, key=lambda item: item[0], reverse=True)[:5]]
+        document = {
+            "recordType": "trade_plan", "leagueKey": league_key, "teamId": own_team.get("id"),
+            "teamName": self._team_name(own_team), "week": week, "trades": suggestions,
+            "approvalStatus": "pending", "createdAt": datetime.now(timezone.utc),
+        }
+        result = self.recommendations.insert_one(document)
+        return {**document, "id": str(result.inserted_id), "createdAt": document["createdAt"].isoformat()}
+
+    def review_trade(self, plan_id, move_id, decision):
+        plan = self._pending_plan(plan_id)
+        if plan.get("recordType") != "trade_plan" or decision not in {"approve", "deny"}:
+            raise ValueError("Invalid trade decision")
+        trade = next((item for item in plan.get("trades", []) if item.get("moveId") == move_id), None)
+        if not trade or trade.get("decision") != "pending":
+            raise ValueError("This trade is missing or has already been reviewed")
+        if decision == "approve":
+            config = self.LEAGUES[plan["leagueKey"]]
+            payload = {
+                "isLeagueManager": False, "isActingAsTeamOwner": False,
+                "teamId": plan["teamId"], "scoringPeriodId": plan["week"],
+                "type": "TRADE_PROPOSAL", "executionType": "PROPOSE",
+                "comment": trade["justification"],
+                "items": [
+                    {"playerId": trade["givePlayerId"], "type": "DROP", "fromTeamId": plan["teamId"], "toTeamId": trade["targetTeamId"]},
+                    {"playerId": trade["receivePlayerId"], "type": "ADD", "fromTeamId": trade["targetTeamId"], "toTeamId": plan["teamId"]},
+                ],
+            }
+            self._request_json(f'{self._league_url(config["leagueId"], write=True)}/transactions/', method="POST", payload=payload, headers={"Content-Type": "application/json", "X-Fantasy-Platform": "kona-PROD"})
+        else:
+            self.recommendations.update_one(
+                {"recordType": "trade_rejection", "leagueKey": plan["leagueKey"], "rejectionKey": trade["rejectionKey"]},
+                {"$set": {"recordType": "trade_rejection", "leagueKey": plan["leagueKey"], "rejectionKey": trade["rejectionKey"], "createdAt": datetime.now(timezone.utc)}}, upsert=True,
+            )
+        trade["decision"] = "approved" if decision == "approve" else "denied"
+        remaining = [item for item in plan.get("trades", []) if item.get("moveId") != move_id and item.get("decision") == "pending"]
+        status = "pending" if remaining else "reviewed"
+        self.recommendations.update_one({"_id": plan["_id"]}, {"$set": {"trades": plan["trades"], "approvalStatus": status, "reviewedAt": datetime.now(timezone.utc)}})
+        return {"status": trade["decision"], "moveId": move_id, "planStatus": status}
+
     def save_plan(self, plan):
         document = {
             **plan,
