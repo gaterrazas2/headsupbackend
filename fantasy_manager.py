@@ -370,14 +370,6 @@ class FantasyManager:
             "roster": players,
         }
 
-    @staticmethod
-    def _position_value(players, position, count):
-        values = sorted(
-            (player.get("matchupAdjustedPoints", 0) for player in players if player.get("position") == position),
-            reverse=True,
-        )
-        return sum(values[:count])
-
     def trade_suggestions(self, league_key):
         config = self.LEAGUES.get(league_key)
         if not config:
@@ -385,9 +377,6 @@ class FantasyManager:
         league = self._request_json(f'{self._league_url(config["leagueId"])}?view=mTeam&view=mRoster&view=mSettings')
         own_team = self._owned_team(league)
         week = max(int(league.get("scoringPeriodId") or 0), 1)
-        slot_counts = league.get("settings", {}).get("rosterSettings", {}).get("lineupSlotCounts", {})
-        position_counts = {"QB": int(slot_counts.get("0", 1)), "RB": int(slot_counts.get("2", 2)), "WR": int(slot_counts.get("4", 2)), "TE": int(slot_counts.get("6", 1))}
-
         rosters = {}
         for team in league.get("teams", []):
             roster = [self._player(entry, week) for entry in (team.get("roster") or {}).get("entries", [])]
@@ -414,29 +403,22 @@ class FantasyManager:
                     give_value = give["matchupAdjustedPoints"]
                     receive_value = receive["matchupAdjustedPoints"]
                     value_ratio = receive_value / max(give_value, 0.1)
-                    if not 0.88 <= value_ratio <= 1.12:
+                    if not 1.025 <= value_ratio <= 1.18:
                         continue
-                    own_before = sum(self._position_value(own_roster, pos, count) for pos, count in position_counts.items())
-                    other_before = sum(self._position_value(other_roster, pos, count) for pos, count in position_counts.items())
-                    own_after_roster = [player for player in own_roster if player["id"] != give["id"]] + [receive]
-                    other_after_roster = [player for player in other_roster if player["id"] != receive["id"]] + [give]
-                    own_gain = sum(self._position_value(own_after_roster, pos, count) for pos, count in position_counts.items()) - own_before
-                    other_gain = sum(self._position_value(other_after_roster, pos, count) for pos, count in position_counts.items()) - other_before
                     roster_value_gain = receive_value - give_value
-                    modeled_gain = max(own_gain, roster_value_gain)
-                    if modeled_gain < 0.25 or other_gain < -1.5:
+                    if roster_value_gain < 0.5:
                         continue
                     rejection_key = f'trade:{give["id"]}:{receive["id"]}:{other_team.get("id")}'
                     if rejection_key in rejected:
                         continue
-                    score = modeled_gain + other_gain - abs(1 - value_ratio) * 5
+                    score = roster_value_gain - abs(1 - value_ratio) * 3
                     proposal = {
                         "moveId": rejection_key, "rejectionKey": rejection_key, "decision": "pending",
                         "targetTeamId": other_team.get("id"), "targetTeam": self._team_name(other_team),
                         "givePlayerId": give["id"], "givePlayer": give["name"], "givePosition": give["position"], "giveValue": give_value,
                         "receivePlayerId": receive["id"], "receivePlayer": receive["name"], "receivePosition": receive["position"], "receiveValue": receive_value,
-                        "yourGain": round(modeled_gain, 2), "theirGain": round(other_gain, 2), "fairness": round(min(value_ratio, 1 / value_ratio) * 100),
-                        "justification": f'{self._team_name(other_team)} gets {give["name"]} to strengthen {give["position"]}, while you fill a need at {receive["position"]}. The player values are within {abs(1 - value_ratio) * 100:.0f}% of each other and their modeled lineup impact is {other_gain:+.1f} points, so this is a balanced offer rather than a fleece.',
+                        "yourGain": round(roster_value_gain, 2), "fairness": round(min(value_ratio, 1 / value_ratio) * 100),
+                        "justification": f'{self._team_name(other_team)} receives {give["name"]}, a {give["position"]} valued at {give_value:.1f} matchup-adjusted points. You ask for {receive["name"]} at {receive_value:.1f}; the difference is only {abs(1 - value_ratio) * 100:.0f}%, so the offer improves your roster without being unrealistic.',
                     }
                     if best_for_team is None or score > best_for_team[0]:
                         best_for_team = (score, proposal)
