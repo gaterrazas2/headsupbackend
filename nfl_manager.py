@@ -68,6 +68,31 @@ class NFLManager:
             query["week"] = {"$lt": current_week}
         return list(self.archives_collection.find(query, {"_id": 0}).sort("week", -1))
 
+    def _settle_completed_event(self, event):
+        """Grade a final game from its box score without building full matchup detail."""
+        event_id = str(event.get("id"))
+        saved = self._saved_pregame_prediction(event_id) or {}
+        if not saved or saved.get("settled"):
+            return
+        summary = self._json(f"{self.ESPN_SITE}/summary?event={event_id}")
+        competition = (summary.get("header", {}).get("competitions") or [{}])[0]
+        competitors = {item.get("homeAway"): item for item in competition.get("competitors", [])}
+        teams = {
+            side: self._team_summary(competitors.get(side, {}).get("team", {}))
+            for side in ("away", "home")
+        }
+        prediction = {
+            "source": "final",
+            "awayScore": self._number(competitors.get("away", {}).get("score")),
+            "homeScore": self._number(competitors.get("home", {}).get("score")),
+        }
+        saved_players = {str(item.get("id")): item for item in saved.get("playerProjections", [])}
+        positions = {player_id: item.get("position") for player_id, item in saved_players.items()}
+        comparisons = self._actual_skill_stats(summary, positions, {})
+        for actual in comparisons:
+            actual["projected"] = saved_players.get(actual["id"], {}).get("projected", {})
+        self._settle_prediction(event_id, summary, prediction, teams, comparisons)
+
     def snapshot_announced_rosters(self):
         """Save every upcoming forecast and automatically grade completed games."""
         scoreboard = self._json(f"{self.ESPN_SITE}/scoreboard?limit=50")
@@ -775,6 +800,18 @@ class NFLManager:
         season_type = scoreboard.get("season", {}).get("type")
         week = scoreboard.get("week", {}).get("number")
         events = scoreboard.get("events", [])
+        completed = [
+            event for event in events
+            if event.get("status", {}).get("type", {}).get("completed") is True
+            or event.get("status", {}).get("type", {}).get("state") == "post"
+        ]
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = [executor.submit(self._settle_completed_event, event) for event in completed]
+            for event, future in zip(completed, futures):
+                try:
+                    future.result()
+                except Exception as error:
+                    print(f"Could not grade final matchup {event.get('id')}: {error}")
         if events and all(
             event.get("status", {}).get("type", {}).get("completed") is True
             or event.get("status", {}).get("type", {}).get("state") == "post"
@@ -818,6 +855,17 @@ class NFLManager:
             venue = competition.get("venue", {})
             address = venue.get("address", {})
             game_state = event.get("status", {}).get("type", {}).get("state", "pre")
+            calculated_home_probability = self._probability(home_probability)
+            calculated_away_probability = self._probability(1 - home_probability)
+            if game_state == "post":
+                saved = self._saved_pregame_prediction(event.get("id")) or {}
+                forecast = saved.get("prediction") or {}
+                projected_winner = forecast.get("winner") or projected_winner
+                home_probability = self._number(forecast.get("homeWinProbability")) or calculated_home_probability
+                away_probability = self._number(forecast.get("awayWinProbability")) or calculated_away_probability
+            else:
+                home_probability = calculated_home_probability
+                away_probability = calculated_away_probability
             matchup = {
                 "id": event.get("id"),
                 "name": event.get("name"),
@@ -829,8 +877,8 @@ class NFLManager:
                 "home": self._team_summary(home_team),
                 "away": self._team_summary(away_team),
                 "projectedWinner": projected_winner,
-                "homeWinProbability": self._probability(home_probability),
-                "awayWinProbability": self._probability(1 - home_probability),
+                "homeWinProbability": home_probability,
+                "awayWinProbability": away_probability,
                 "spread": odds.get("details") or "Not available",
                 "venue": venue.get("fullName", "Venue TBD"),
                 "location": ", ".join(filter(None, [address.get("city"), address.get("state")])),
