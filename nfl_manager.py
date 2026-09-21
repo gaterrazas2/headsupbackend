@@ -147,26 +147,18 @@ class NFLManager:
         if not game:
             return None
         grading = saved.get("grading", {}) if saved.get("settled") else {}
-        projections = {str(item.get("id")): item for item in saved.get("playerProjections", [])}
-        comparisons = {}
-        for prop in grading.get("props", []):
-            player_id = str(prop.get("playerId"))
-            source = projections.get(player_id, {})
-            item = comparisons.setdefault(player_id, {
-                "id": player_id, "name": prop.get("player") or source.get("name"),
-                "team": source.get("team"), "position": prop.get("position") or source.get("position"),
-                "projected": {}, "actual": {},
-            })
-            stat = prop.get("stat")
-            if stat:
-                item["projected"][stat] = prop.get("projected")
-                item["actual"][stat] = prop.get("actual")
+        # Older settled snapshots only retained graded yardage/reception props,
+        # which discarded actual touchdown totals. Rebuild those snapshots once
+        # from ESPN, then persist the complete comparisons for future requests.
+        if "playerComparisons" not in grading:
+            return None
+        comparisons = grading.get("playerComparisons") or []
         home_score, away_score = game.get("homeScore", 0), game.get("awayScore", 0)
         return {
             "id": str(event_id), "teams": {"away": game.get("away", {}), "home": game.get("home", {})},
             "odds": {"details": "Final", "overUnder": None}, "gameState": "post",
             "prediction": {"source": "final", "awayScore": away_score, "homeScore": home_score, "status": game.get("status", "Final")},
-            "pregamePrediction": saved.get("prediction"), "playerComparisons": list(comparisons.values()),
+            "pregamePrediction": saved.get("prediction"), "playerComparisons": comparisons,
             "topProps": [], "topPropsStatus": None, "articles": [],
             "rankingsSeason": 2025, "currentRankingsSeason": archive.get("season") or saved.get("season"),
             "accuracy": self.accuracy(archive.get("season") or saved.get("season")),
@@ -203,7 +195,14 @@ class NFLManager:
         if self.predictions_collection is None:
             return
         saved = self._saved_pregame_prediction(event_id)
-        if not saved or saved.get("settled"):
+        if not saved:
+            return
+        if saved.get("settled"):
+            if "playerComparisons" not in (saved.get("grading") or {}):
+                self.predictions_collection.update_one(
+                    {"gameId": str(event_id), "sport": "nfl", "phase": "pregame"},
+                    {"$set": {"grading.playerComparisons": player_comparisons}},
+                )
             return
         actual_winner = "Tie" if prediction.get("homeScore") == prediction.get("awayScore") else (
             teams["home"].get("name") if prediction.get("homeScore", 0) > prediction.get("awayScore", 0) else teams["away"].get("name")
@@ -227,7 +226,8 @@ class NFLManager:
             {"gameId": str(event_id), "sport": "nfl", "phase": "pregame"},
             {"$set": {"season": season, "settled": True, "settledAt": int(time.time()), "grading": {
                 "gameCorrect": None if actual_winner == "Tie" else forecast.get("winner") == actual_winner,
-                "projectedWinner": forecast.get("winner"), "actualWinner": actual_winner, "props": props,
+                "projectedWinner": forecast.get("winner"), "actualWinner": actual_winner,
+                "props": props, "playerComparisons": player_comparisons,
             }}},
         )
 
