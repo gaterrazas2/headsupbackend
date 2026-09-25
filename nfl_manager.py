@@ -66,7 +66,7 @@ class NFLManager:
             query["seasonType"] = season_type
         if current_week:
             query["week"] = {"$lt": current_week}
-        return list(self.archives_collection.find(query, {"_id": 0}).sort("week", -1))
+        return list(self.archives_collection.find(query, {"_id": 0}).sort("week", 1))
 
     def _settle_completed_event(self, event):
         """Grade a final game from its box score without building full matchup detail."""
