@@ -93,6 +93,38 @@ class NFLManager:
             actual["projected"] = saved_players.get(actual["id"], {}).get("projected", {})
         self._settle_prediction(event_id, summary, prediction, teams, comparisons)
 
+    def _backfill_completed_week_archives(self, season, season_type, current_week):
+        """Persist any finished earlier week ESPN has already advanced past."""
+        if self.archives_collection is None or not season or not season_type or not current_week:
+            return
+        existing_weeks = {
+            row.get("week") for row in self.archives_collection.find(
+                {"season": season, "seasonType": season_type, "week": {"$lt": current_week}},
+                {"_id": 0, "week": 1},
+            )
+        }
+        for previous_week in range(1, int(current_week)):
+            if previous_week in existing_weeks:
+                continue
+            scoreboard = self._json(
+                f"{self.ESPN_SITE}/scoreboard?dates={season}&seasontype={season_type}&week={previous_week}&limit=50"
+            )
+            events = scoreboard.get("events", [])
+            if not events or not all(
+                event.get("status", {}).get("type", {}).get("completed") is True
+                or event.get("status", {}).get("type", {}).get("state") == "post"
+                for event in events
+            ):
+                continue
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                futures = [executor.submit(self._settle_completed_event, event) for event in events]
+                for event, future in zip(events, futures):
+                    try:
+                        future.result()
+                    except Exception as error:
+                        print(f"Could not grade archived matchup {event.get('id')}: {error}")
+            self._archive_completed_week(events, season, season_type, previous_week)
+
     def snapshot_announced_rosters(self):
         """Save every upcoming forecast and automatically grade completed games."""
         scoreboard = self._json(f"{self.ESPN_SITE}/scoreboard?limit=50")
@@ -800,6 +832,7 @@ class NFLManager:
         season_type = scoreboard.get("season", {}).get("type")
         week = scoreboard.get("week", {}).get("number")
         events = scoreboard.get("events", [])
+        self._backfill_completed_week_archives(season, season_type, week)
         completed = [
             event for event in events
             if event.get("status", {}).get("type", {}).get("completed") is True
